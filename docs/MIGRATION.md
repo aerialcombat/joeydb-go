@@ -10,15 +10,16 @@ joey --url <url> ingest --file <temp>
 Add the immutable public module version:
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.2.1
+go get github.com/aerialcombat/joeydb-go@v0.3.0
 ```
 
 Do not commit a local `replace` directive for adoption. Development workspaces
 may temporarily reference a checkout, but the committed dependency should
 resolve through the published version.
 
-`v0.2.1` contains both the ingestion/transport migration and the typed
-query/write migration below, plus the durable typed-write encoding contract.
+`v0.3.0` contains the ingestion/transport migration, typed query/write
+authoring, shape-safe query results, unified error classification, semantic
+keys, and the durable typed-write encoding contract.
 
 The smallest safe follow-up replaces only that adapter. Keep Observatory’s
 domain-to-ingestion mapping and metrics unchanged initially.
@@ -129,9 +130,9 @@ keys and classify mutation behavior before choosing option 3.
 `github.com/aerialcombat/joeydb-go/write/v1`. It is metadata for audit and
 persistence; the SDK does not silently add it to a key.
 
-## Typed v0.2.1 follow-up
+## Typed v0.3.0 follow-up
 
-With immutable `v0.2.1`, update Observatory's adapter to accept
+With immutable `v0.3.0`, update Observatory's adapter to accept
 `query.Request` and `write.Request` and delegate to:
 
 ```go
@@ -262,10 +263,38 @@ or graph output.
 
 Before merging that consumer PR:
 
-1. pin `github.com/aerialcombat/joeydb-go v0.2.1` without `replace`;
+1. pin `github.com/aerialcombat/joeydb-go v0.3.0` without `replace`;
 2. run Observatory's unit/race/live gates;
 3. retain original raw bodies for existing receipts or select a fresh database
    epoch or audited key-domain transition;
 4. retain application metrics around the SDK transport;
 5. verify no application JoeyDB request construction still calls
    `json.Marshal` or uses `map[string]any`.
+
+## v0.3.0 developer/agent experience follow-up
+
+The v0.3.0 developer/agent experience slice removes three more reusable
+adapters:
+
+1. replace Observatory's local `Fact`/`QueryResult` structs with
+   `query.Fact`, `query.TableResult`, and the appropriate shape helper;
+2. replace NUL-delimited `domain.Digest` key framing with `SemanticKey`, after
+   preserving or explicitly transitioning every existing durable key domain;
+3. replace the local partial error classifier with `joeydb.Classify`, while
+   keeping application metrics and domain policy outside the SDK.
+
+The candidate query and semantic-key call sites become:
+
+```go
+result, response, err := sdk.QueryTable(ctx, request)
+
+key, err := joeydb.SemanticKey("task-create", project, title)
+if err != nil {
+	return err
+}
+_, err = client.WriteRequest(ctx, key, writeRequest, nil)
+```
+
+Adopt immutable `v0.3.0` without a local `replace`, then use a disposable
+compatibility worktree to prove source and live behavior before modifying the
+actual Observatory branch.

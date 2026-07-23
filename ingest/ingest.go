@@ -10,7 +10,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"mime"
 	"strconv"
@@ -164,7 +163,8 @@ type writeRecord struct {
 func Parse(data []byte) (Batch, error) {
 	var batch Batch
 	if len(data) > MaxInputBytes {
-		return Batch{}, fmt.Errorf("ingestion batch exceeds the %d-byte input limit", MaxInputBytes)
+		return Batch{}, invalid(CodeInputTooLarge, "input",
+			fmt.Sprintf("ingestion batch exceeds the %d-byte input limit", MaxInputBytes))
 	}
 	if err := decodeStrict(data, &batch); err != nil {
 		return Batch{}, err
@@ -193,9 +193,8 @@ func ParseAndCompile(data []byte) (Batch, Compiled, error) {
 // canonical representation must fit MaxInputBytes.
 func Compile(batch Batch) (Compiled, error) {
 	if typedBatchExceedsInputLimit(batch) {
-		return Compiled{}, fmt.Errorf(
-			"canonical ingestion batch exceeds the %d-byte input limit", MaxInputBytes,
-		)
+		return Compiled{}, invalid(CodeCanonicalTooLarge, "input",
+			fmt.Sprintf("canonical ingestion batch exceeds the %d-byte input limit", MaxInputBytes))
 	}
 	if err := Validate(batch); err != nil {
 		return Compiled{}, err
@@ -209,9 +208,8 @@ func compileValidated(batch Batch, enforceCanonicalLimit bool) (Compiled, error)
 		return Compiled{}, fmt.Errorf("canonicalize batch: %w", err)
 	}
 	if enforceCanonicalLimit && len(canonical) > MaxInputBytes {
-		return Compiled{}, fmt.Errorf(
-			"canonical ingestion batch exceeds the %d-byte input limit", MaxInputBytes,
-		)
+		return Compiled{}, invalid(CodeCanonicalTooLarge, "input",
+			fmt.Sprintf("canonical ingestion batch exceeds the %d-byte input limit", MaxInputBytes))
 	}
 	batchDigest := digest(canonical)
 	writeBody, producerEntity, sourceEntity, claimEntities, recordCount, err := compile(batch, canonical, batchDigest)
@@ -287,13 +285,25 @@ func Validate(batch Batch) error {
 		return err
 	}
 	if batch.Schema != SchemaV1 {
-		return fmt.Errorf("schema must be %q", SchemaV1)
+		return invalid(CodeUnsupportedValue, "schema",
+			fmt.Sprintf("must be %q", SchemaV1))
 	}
 	if batch.Profile != ProfileKnowledgeProposals && batch.Profile != ProfileTrustedFacts {
-		return fmt.Errorf("profile must be %q or %q", ProfileKnowledgeProposals, ProfileTrustedFacts)
+		return invalid(CodeUnsupportedValue, "profile",
+			fmt.Sprintf("must be %q or %q",
+				ProfileKnowledgeProposals, ProfileTrustedFacts))
 	}
-	if batch.Producer.Name == "" || batch.Producer.Version == "" || batch.Producer.RunID == "" {
-		return errors.New("producer.name, producer.version, and producer.run_id are required")
+	for _, field := range []struct {
+		path  string
+		value string
+	}{
+		{"producer.name", batch.Producer.Name},
+		{"producer.version", batch.Producer.Version},
+		{"producer.run_id", batch.Producer.RunID},
+	} {
+		if field.value == "" {
+			return invalid(CodeMissingField, field.path, "value is required")
+		}
 	}
 	for _, field := range []struct {
 		name  string
@@ -304,54 +314,76 @@ func Validate(batch Batch) error {
 		{"producer.run_id", batch.Producer.RunID},
 	} {
 		if len(field.value) > MaxLabelBytes {
-			return fmt.Errorf("%s exceeds %d bytes", field.name, MaxLabelBytes)
+			return invalid(CodeValueTooLarge, field.name,
+				fmt.Sprintf("exceeds %d bytes", MaxLabelBytes))
 		}
 	}
 	if !ValidSHA256Identity(batch.Producer.SchemaIdentity) {
-		return errors.New("producer.schema_identity must be lowercase sha256:<64-hex>")
+		return invalid(CodeInvalidDigest, "producer.schema_identity",
+			"must be lowercase sha256:<64-hex>")
 	}
 	if batch.Source != nil {
 		if !ValidSHA256Identity(batch.Source.Digest) {
-			return errors.New("source.digest must be lowercase sha256:<64-hex>")
+			return invalid(CodeInvalidDigest, "source.digest",
+				"must be lowercase sha256:<64-hex>")
 		}
 		if batch.Source.MediaType == "" {
-			return errors.New("source.media_type is required")
+			return invalid(CodeMissingField, "source.media_type", "value is required")
 		}
 		if len(batch.Source.MediaType) > MaxLabelBytes {
-			return fmt.Errorf("source.media_type exceeds %d bytes", MaxLabelBytes)
+			return invalid(CodeValueTooLarge, "source.media_type",
+				fmt.Sprintf("exceeds %d bytes", MaxLabelBytes))
 		}
 		mediaType, params, err := mime.ParseMediaType(batch.Source.MediaType)
 		if err != nil || len(params) != 0 || mediaType != batch.Source.MediaType ||
 			strings.ToLower(batch.Source.MediaType) != batch.Source.MediaType {
-			return errors.New("source.media_type must be a canonical lowercase type/subtype without parameters")
+			return invalid(CodeInvalidMediaType, "source.media_type",
+				"must be a canonical lowercase type/subtype without parameters")
 		}
 		if len(batch.Source.Artifact.URI) > MaxTextBytes {
-			return fmt.Errorf("source.artifact.uri exceeds %d bytes", MaxTextBytes)
+			return invalid(CodeValueTooLarge, "source.artifact.uri",
+				fmt.Sprintf("source.artifact.uri exceeds %d bytes", MaxTextBytes))
 		}
 		switch batch.Source.Artifact.Mode {
-		case "copy", "link":
+		case ArtifactModeCopy, ArtifactModeLink:
 			if batch.Source.Artifact.URI == "" {
-				return fmt.Errorf("source.artifact.uri is required for mode %q", batch.Source.Artifact.Mode)
+				return invalid(CodeMissingField, "source.artifact.uri",
+					fmt.Sprintf("source.artifact.uri is required for mode %q",
+						batch.Source.Artifact.Mode))
 			}
-		case "purge", "none":
+		case ArtifactModePurge, ArtifactModeNone:
 			if batch.Source.Artifact.URI != "" {
-				return fmt.Errorf("source.artifact.uri is not allowed for mode %q", batch.Source.Artifact.Mode)
+				return invalid(CodeIncompatibleFields, "source.artifact.uri",
+					fmt.Sprintf("source.artifact.uri is not allowed for mode %q",
+						batch.Source.Artifact.Mode))
 			}
 		default:
-			return errors.New(`source.artifact.mode must be "copy", "link", "purge", or "none"`)
+			return invalid(CodeInvalidArtifact, "source.artifact.mode",
+				`must be "copy", "link", "purge", or "none"`)
 		}
 	}
 	if len(batch.Claims) == 0 || len(batch.Claims) > MaxClaims {
-		return fmt.Errorf("claims must contain 1..%d claims", MaxClaims)
+		return invalid(CodeInvalidCount, "claims",
+			fmt.Sprintf("must contain 1..%d claims", MaxClaims))
 	}
 	externalIDs := make(map[string]bool, len(batch.Claims))
 	for i, claim := range batch.Claims {
 		where := fmt.Sprintf("claims[%d]", i)
-		if claim.ExternalID == "" || claim.Subject == "" || claim.Predicate == "" {
-			return fmt.Errorf("%s requires external_id, subject, and predicate", where)
+		for _, field := range []struct {
+			path  string
+			value string
+		}{
+			{where + ".external_id", claim.ExternalID},
+			{where + ".subject", claim.Subject},
+			{where + ".predicate", claim.Predicate},
+		} {
+			if field.value == "" {
+				return invalid(CodeMissingField, field.path, "value is required")
+			}
 		}
 		if len(claim.ExternalID) > MaxLabelBytes {
-			return fmt.Errorf("%s.external_id exceeds %d bytes", where, MaxLabelBytes)
+			return invalid(CodeValueTooLarge, where+".external_id",
+				fmt.Sprintf("exceeds %d bytes", MaxLabelBytes))
 		}
 		if err := validateUserLabel(claim.Subject, where+".subject"); err != nil {
 			return err
@@ -360,11 +392,12 @@ func Validate(batch Batch) error {
 			return err
 		}
 		if externalIDs[claim.ExternalID] {
-			return fmt.Errorf("%s.external_id %q is duplicated", where, claim.ExternalID)
+			return invalid(CodeDuplicateValue, where+".external_id",
+				fmt.Sprintf("%q is duplicated", claim.ExternalID))
 		}
 		externalIDs[claim.ExternalID] = true
-		if err := validateObject(claim.Object); err != nil {
-			return fmt.Errorf("%s.object: %w", where, err)
+		if err := validateObject(claim.Object, where+".object"); err != nil {
+			return err
 		}
 		if claim.Object.Entity != "" {
 			if err := validateUserLabel(claim.Object.Entity, where+".object.entity"); err != nil {
@@ -372,23 +405,32 @@ func Validate(batch Batch) error {
 			}
 		}
 		if claim.ConfidencePPM != nil && *claim.ConfidencePPM > 1_000_000 {
-			return fmt.Errorf("%s.confidence_ppm must be in 0..1000000", where)
+			return invalid(CodeNumberOutOfRange, where+".confidence_ppm",
+				"must be in 0..1000000")
 		}
 		if len(claim.Evidence) > MaxEvidence {
-			return fmt.Errorf("%s.evidence exceeds %d items", where, MaxEvidence)
+			return invalid(CodeInvalidCount, where+".evidence",
+				fmt.Sprintf("%s.evidence exceeds %d items", where, MaxEvidence))
 		}
 		if len(claim.Evidence) > 0 && batch.Source == nil {
-			return fmt.Errorf("%s.evidence requires source", where)
+			return invalid(CodeIncompatibleFields, where+".evidence",
+				"evidence requires source")
 		}
 		for j, evidence := range claim.Evidence {
+			evidencePath := fmt.Sprintf("%s.evidence[%d]", where, j)
 			if evidence.Locator == "" {
-				return fmt.Errorf("%s.evidence[%d].locator is required", where, j)
+				return invalid(CodeMissingField, evidencePath+".locator",
+					"value is required")
 			}
 			if len(evidence.Locator) > MaxLabelBytes {
-				return fmt.Errorf("%s.evidence[%d].locator exceeds %d bytes", where, j, MaxLabelBytes)
+				return invalid(CodeValueTooLarge, evidencePath+".locator",
+					fmt.Sprintf("%s.locator exceeds %d bytes",
+						evidencePath, MaxLabelBytes))
 			}
 			if len(evidence.Quote) > MaxTextBytes {
-				return fmt.Errorf("%s.evidence[%d].quote exceeds %d bytes", where, j, MaxTextBytes)
+				return invalid(CodeValueTooLarge, evidencePath+".quote",
+					fmt.Sprintf("%s.quote exceeds %d bytes",
+						evidencePath, MaxTextBytes))
 			}
 		}
 	}
@@ -398,7 +440,7 @@ func Validate(batch Batch) error {
 func validateUTF8Strings(batch Batch) error {
 	check := func(where, value string) error {
 		if !utf8.ValidString(value) {
-			return fmt.Errorf("%s is not valid UTF-8", where)
+			return invalid(CodeInvalidUTF8, where, "value must contain valid UTF-8")
 		}
 		return nil
 	}
@@ -465,7 +507,8 @@ func validateSemanticClaimUniqueness(batch Batch) error {
 		SchemaIdentity: batch.Producer.SchemaIdentity,
 	})
 	if err != nil {
-		return fmt.Errorf("canonicalize producer: %w", err)
+		return invalidCause(CodeInvalidJSON, "producer",
+			"could not canonicalize producer identity", err)
 	}
 	producerSum := sha256.Sum256(append([]byte(producerDomainV1), producerCanonical...))
 	producerEntity := "producer:sha256:" + hex.EncodeToString(producerSum[:])
@@ -474,19 +517,22 @@ func validateSemanticClaimUniqueness(batch Batch) error {
 		sourceDigest = batch.Source.Digest
 	}
 	seen := make(map[string]bool, len(batch.Claims))
-	for _, claim := range batch.Claims {
+	for i, claim := range batch.Claims {
 		claimCanonical, err := json.Marshal(claimIdentity{
 			Profile: batch.Profile, Producer: producerEntity, SourceDigest: sourceDigest,
 			Subject: claim.Subject, Predicate: claim.Predicate, Object: claim.Object,
 			ConfidencePPM: claim.ConfidencePPM, Evidence: claim.Evidence,
 		})
 		if err != nil {
-			return fmt.Errorf("canonicalize claim %q: %w", claim.ExternalID, err)
+			return invalidCause(CodeInvalidJSON, fmt.Sprintf("claims[%d]", i),
+				fmt.Sprintf("could not canonicalize claim %q", claim.ExternalID), err)
 		}
 		claimSum := sha256.Sum256(append([]byte(claimDomainV1), claimCanonical...))
 		claimEntity := claimEntityPrefix + hex.EncodeToString(claimSum[:])
 		if seen[claimEntity] {
-			return fmt.Errorf("duplicate semantic claim %q", claim.ExternalID)
+			return invalid(CodeDuplicateSemanticClaim,
+				fmt.Sprintf("claims[%d]", i),
+				fmt.Sprintf("duplicate semantic claim %q", claim.ExternalID))
 		}
 		seen[claimEntity] = true
 	}
@@ -495,20 +541,22 @@ func validateSemanticClaimUniqueness(batch Batch) error {
 
 func validateUserLabel(label, where string) error {
 	if len(label) > MaxLabelBytes {
-		return fmt.Errorf("%s exceeds %d bytes", where, MaxLabelBytes)
+		return invalid(CodeValueTooLarge, where,
+			fmt.Sprintf("exceeds %d bytes", MaxLabelBytes))
 	}
 	for _, prefix := range []string{
 		"ingest:", "ingestion:sha256:", "claim:sha256:",
 		"producer:sha256:", "source:sha256:", "media-type:",
 	} {
 		if strings.HasPrefix(label, prefix) {
-			return fmt.Errorf("%s uses compiler-reserved namespace %q", where, prefix)
+			return invalid(CodeReservedNamespace, where,
+				fmt.Sprintf("uses compiler-reserved namespace %q", prefix))
 		}
 	}
 	return nil
 }
 
-func validateObject(object Object) error {
+func validateObject(object Object, path string) error {
 	forms := 0
 	if object.Entity != "" {
 		forms++
@@ -517,20 +565,25 @@ func validateObject(object Object) error {
 		forms++
 	}
 	if forms != 1 {
-		return errors.New("exactly one of entity or u64 is required")
+		return invalid(CodeInvalidObject, path,
+			"exactly one of entity or u64 is required")
 	}
 	if object.U64 == "" {
 		return nil
 	}
 	if len(object.U64) > 1 && object.U64[0] == '0' {
-		return errors.New("u64 must be a canonical decimal string")
+		return invalid(CodeInvalidObject, path+".u64",
+			"must be a canonical decimal string")
 	}
 	value, err := strconv.ParseUint(object.U64, 10, 64)
 	if err != nil {
-		return errors.New("u64 must be a canonical non-negative decimal string")
+		return invalidCause(CodeInvalidObject, path+".u64",
+			"must be a canonical non-negative decimal string", err)
 	}
 	if value > MaxJSSafeInteger {
-		return fmt.Errorf("u64 exceeds JoeyDB's current JSON safe-integer limit %d", MaxJSSafeInteger)
+		return invalid(CodeNumberOutOfRange, path+".u64",
+			fmt.Sprintf("exceeds JoeyDB's current JSON safe-integer limit %d",
+				MaxJSSafeInteger))
 	}
 	return nil
 }

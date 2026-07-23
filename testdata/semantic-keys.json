@@ -1,0 +1,35 @@
+{
+  "domain": "github.com/aerialcombat/joeydb-go/semantic-key/v1",
+  "cases": [
+    {
+      "namespace": "task-status",
+      "parts": ["task:1", "queued", ""],
+      "suffix": "task-status:wSXwZ5mogYAgnG5fQl53rtDrQ-SGs2SFrS2LiuyAaI4"
+    },
+    {
+      "namespace": "boundary",
+      "parts": ["ab", "c"],
+      "suffix": "boundary:nY9grxMtkKcv0HZqgliTlP_MOj2vp8yIb1sN62rn-pY"
+    },
+    {
+      "namespace": "boundary",
+      "parts": ["a", "bc"],
+      "suffix": "boundary:337Xt-_apS7qjI0G6NBOdSJtmLziTwL2dFrMcBBMWJs"
+    },
+    {
+      "namespace": "empty",
+      "parts": [],
+      "suffix": "empty:CPvxsz3fgrRlBNrAzWtq2hkBRF_lgWi9W74NZX-rS-w"
+    },
+    {
+      "namespace": "empty",
+      "parts": [""],
+      "suffix": "empty:l7GdN_rxCLfmS9L7XPrY8sMO5z1OfnEB5Uen0Gz47rg"
+    },
+    {
+      "namespace": "unicode",
+      "parts": ["서울", "🚀"],
+      "suffix": "unicode:iSNskhdWhXsjSPkftYfZun8E8ZS8-V0T9bWJ3FRxncA"
+    }
+  ]
+}

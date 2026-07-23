@@ -6,53 +6,77 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
+	"strings"
 	"unicode/utf8"
 )
 
 func decodeStrict(data []byte, target any) error {
 	if len(bytes.TrimSpace(data)) == 0 {
-		return errors.New("empty body")
+		return invalid(CodeInvalidJSON, "input", "body must not be empty")
 	}
 	if !utf8.Valid(data) {
-		return errors.New("input is not valid UTF-8")
+		return invalid(CodeInvalidUTF8, "input", "input must contain valid UTF-8")
 	}
 	if err := rejectUnpairedJSONSurrogates(data); err != nil {
 		return err
 	}
-	hasNull, err := inspectJSON(data)
+	nullPath, err := inspectJSON(data)
 	if err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
-		return err
+		var typeError *json.UnmarshalTypeError
+		if errors.As(err, &typeError) {
+			path := typeError.Field
+			if path == "" {
+				path = "input"
+			}
+			return invalidCause(CodeInvalidJSON, path, err.Error(), err)
+		}
+		const unknownPrefix = `json: unknown field "`
+		if strings.HasPrefix(err.Error(), unknownPrefix) &&
+			strings.HasSuffix(err.Error(), `"`) {
+			field := strings.TrimSuffix(
+				strings.TrimPrefix(err.Error(), unknownPrefix), `"`,
+			)
+			return invalidCause(CodeUnknownField, field,
+				fmt.Sprintf("unknown field %q is not part of joeydb.ingestion/v1", field),
+				err)
+		}
+		return invalidCause(CodeInvalidJSON, "input", err.Error(), err)
 	}
 	var trailing json.RawMessage
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return errors.New("trailing content after object")
+		return invalidCause(CodeTrailingContent, "input",
+			"trailing content after object", err)
 	}
-	if hasNull {
-		return errors.New("explicit null values are not allowed")
+	if nullPath != "" {
+		return invalid(CodeExplicitNull, nullPath, "explicit null is not allowed")
 	}
 	return nil
 }
 
-func inspectJSON(data []byte) (bool, error) {
+func inspectJSON(data []byte) (string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
-	hasNull := false
-	var walk func(int) error
-	walk = func(depth int) error {
+	nullPath := ""
+	var walk func(int, string) error
+	walk = func(depth int, path string) error {
 		if depth > MaxJSONDepth {
-			return fmt.Errorf("JSON nesting exceeds %d levels", MaxJSONDepth)
+			return invalid(CodeMaxDepth, jsonPath(path),
+				fmt.Sprintf("JSON nesting exceeds %d levels", MaxJSONDepth))
 		}
 		token, err := decoder.Token()
 		if err != nil {
-			return err
+			return invalidCause(CodeInvalidJSON, jsonPath(path), err.Error(), err)
 		}
 		if token == nil {
-			hasNull = true
+			if nullPath == "" {
+				nullPath = jsonPath(path)
+			}
 			return nil
 		}
 		delim, ok := token.(json.Delim)
@@ -65,36 +89,53 @@ func inspectJSON(data []byte) (bool, error) {
 			for decoder.More() {
 				keyToken, err := decoder.Token()
 				if err != nil {
-					return err
+					return invalidCause(
+						CodeInvalidJSON, jsonPath(path), err.Error(), err,
+					)
 				}
 				key, ok := keyToken.(string)
 				if !ok {
-					return errors.New("object key is not a string")
+					return invalid(CodeInvalidJSON, jsonPath(path),
+						"object key is not a string")
 				}
+				childPath := appendJSONField(path, key)
 				if seen[key] {
-					return fmt.Errorf("duplicate field %q", key)
+					return invalid(CodeDuplicateField, childPath,
+						fmt.Sprintf("duplicate field %q", key))
 				}
 				seen[key] = true
-				if err := walk(depth + 1); err != nil {
+				if err := walk(depth+1, childPath); err != nil {
 					return err
 				}
 			}
-			_, err = decoder.Token()
-			return err
+			if _, err = decoder.Token(); err != nil {
+				return invalidCause(
+					CodeInvalidJSON, jsonPath(path), err.Error(), err,
+				)
+			}
+			return nil
 		case '[':
+			index := 0
 			for decoder.More() {
-				if err := walk(depth + 1); err != nil {
+				childPath := path + "[" + strconv.Itoa(index) + "]"
+				if err := walk(depth+1, childPath); err != nil {
 					return err
 				}
+				index++
 			}
-			_, err = decoder.Token()
-			return err
+			if _, err = decoder.Token(); err != nil {
+				return invalidCause(
+					CodeInvalidJSON, jsonPath(path), err.Error(), err,
+				)
+			}
+			return nil
 		default:
-			return fmt.Errorf("unexpected delimiter %q", delim)
+			return invalid(CodeInvalidJSON, jsonPath(path),
+				fmt.Sprintf("unexpected delimiter %q", delim))
 		}
 	}
-	err := walk(1)
-	return hasNull, err
+	err := walk(1, "")
+	return nullPath, err
 }
 
 func rejectUnpairedJSONSurrogates(data []byte) error {
@@ -119,19 +160,36 @@ func rejectUnpairedJSONSurrogates(data []byte) error {
 			switch {
 			case value >= 0xd800 && value <= 0xdbff:
 				if i+6 >= len(data) || data[i+1] != '\\' || data[i+2] != 'u' {
-					return errors.New("JSON string contains an unpaired high surrogate")
+					return invalid(CodeInvalidUnicode, "input",
+						"JSON string contains an unpaired high surrogate")
 				}
 				low, ok := parseJSONHex4(data[i+3 : i+7])
 				if !ok || low < 0xdc00 || low > 0xdfff {
-					return errors.New("JSON string contains an unpaired high surrogate")
+					return invalid(CodeInvalidUnicode, "input",
+						"JSON string contains an unpaired high surrogate")
 				}
 				i += 6
 			case value >= 0xdc00 && value <= 0xdfff:
-				return errors.New("JSON string contains an unpaired low surrogate")
+				return invalid(CodeInvalidUnicode, "input",
+					"JSON string contains an unpaired low surrogate")
 			}
 		}
 	}
 	return nil
+}
+
+func appendJSONField(path, field string) string {
+	if path == "" {
+		return field
+	}
+	return path + "." + field
+}
+
+func jsonPath(path string) string {
+	if path == "" {
+		return "input"
+	}
+	return path
 }
 
 func parseJSONHex4(data []byte) (uint16, bool) {

@@ -5,6 +5,42 @@ policy. Ingestion byte compatibility is stricter than the Go API version.
 
 ## Unreleased
 
+## v0.3.0 — 2026-07-23
+
+### Added
+
+- Add SDK-owned response models and shape-safe execution helpers for table,
+  graph, document, key/value, and columnar fact queries.
+- Add `Classify`, stable `ErrorKind` values, and a non-destructive `ErrorInfo`
+  view spanning validation, managed API, capability, key, size, decode,
+  transport, retry, protocol, uncertainty, context, and unknown errors.
+- Add `SemanticKey` under the permanent
+  `github.com/aerialcombat/joeydb-go/semantic-key/v1` derivation domain, with
+  length-framed ordered parts and a fixed-size logical suffix.
+- Add ingestion entity/u64, artifact, confidence, proposal-batch, and
+  trusted-batch constructors.
+- Add structured ingestion parse/validation errors with deterministic code,
+  path, and detail fields.
+- Add `llms.txt`, executable examples for all typed query shapes, and
+  developer/agent decision guidance.
+
+### Changed
+
+- Typed ingestion constructors deep-copy claim evidence and confidence values
+  so later caller mutation cannot change compilation identity.
+- Ingestion validation message text is now structured. Applications should use
+  `errors.As` plus `ValidationError.Code` and `Path` rather than matching prose.
+- The live compatibility proof decodes all five simple result shapes through
+  their shape-safe helpers.
+
+### Compatibility
+
+- `write.EncodingDomain` and every published v0.2.0/v0.2.1 write fixture are
+  unchanged.
+- The ingestion compiler, canonical bytes, compiled bytes, digests, identities,
+  and record counts are unchanged.
+- Existing raw and v0.2.1 typed APIs remain available and source-compatible.
+
 ## v0.2.1 — 2026-07-23
 
 ### Added

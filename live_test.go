@@ -255,7 +255,7 @@ func TestLiveTypedAuthoring(t *testing.T) {
 		"columnar": querypkg.Columnar(),
 	} {
 		t.Run("return-"+name, func(t *testing.T) {
-			if count := liveTypedFactCount(t, ctx, client, querypkg.Request{
+			if count := liveTypedShapeFactCount(t, ctx, client, querypkg.Request{
 				Where:  querypkg.Where{Predicate: querypkg.Labels("obs:member")},
 				Return: result,
 			}); count != 1 {
@@ -263,20 +263,15 @@ func TestLiveTypedAuthoring(t *testing.T) {
 			}
 		})
 	}
-	var graph struct {
-		Facts []json.RawMessage `json:"facts"`
-		Graph struct {
-			Edges []json.RawMessage `json:"edges"`
-		} `json:"graph"`
-	}
-	if _, err := client.QueryRequest(ctx, querypkg.Request{
+	graph, _, err := client.QueryGraph(ctx, querypkg.Request{
 		Where:  querypkg.Where{Predicate: querypkg.Labels("obs:member")},
 		Return: querypkg.Graph(querypkg.ExcludeFacts),
 		Limit:  querypkg.MaxResults(20),
-	}, &graph); err != nil {
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if len(graph.Facts) != 0 || len(graph.Graph.Edges) != 1 {
+	if len(graph.Facts) != 0 || graph.Graph == nil || len(graph.Graph.Edges) != 1 {
 		t.Fatalf("typed graph response=%+v", graph)
 	}
 	if count := liveTypedFactCount(t, ctx, client, querypkg.Request{
@@ -424,6 +419,50 @@ func liveTypedFactCount(
 		t.Fatal(err)
 	}
 	return response.Metadata.FactCount
+}
+
+func liveTypedShapeFactCount(
+	t *testing.T,
+	ctx context.Context,
+	client *Client,
+	request querypkg.Request,
+) int {
+	t.Helper()
+	switch request.Return.Shape() {
+	case querypkg.ShapeTable:
+		result, _, err := client.QueryTable(ctx, request)
+		if err != nil || result.Table == nil {
+			t.Fatalf("typed table result=%+v err=%v", result, err)
+		}
+		return result.Metadata.FactCount
+	case querypkg.ShapeGraph:
+		result, _, err := client.QueryGraph(ctx, request)
+		if err != nil || result.Graph == nil {
+			t.Fatalf("typed graph result=%+v err=%v", result, err)
+		}
+		return result.Metadata.FactCount
+	case querypkg.ShapeDocument:
+		result, _, err := client.QueryDocument(ctx, request)
+		if err != nil || result.Document == nil {
+			t.Fatalf("typed document result=%+v err=%v", result, err)
+		}
+		return result.Metadata.FactCount
+	case querypkg.ShapeKV:
+		result, _, err := client.QueryKV(ctx, request)
+		if err != nil || result.KV == nil {
+			t.Fatalf("typed kv result=%+v err=%v", result, err)
+		}
+		return result.Metadata.FactCount
+	case querypkg.ShapeColumnar:
+		result, _, err := client.QueryColumnar(ctx, request)
+		if err != nil || result.Columnar == nil {
+			t.Fatalf("typed columnar result=%+v err=%v", result, err)
+		}
+		return result.Metadata.FactCount
+	default:
+		t.Fatalf("unsupported typed result shape %q", request.Return.Shape())
+		return 0
+	}
 }
 
 type referenceDaemon struct {

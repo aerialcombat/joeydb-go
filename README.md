@@ -11,11 +11,12 @@ The initial compatibility target is JoeyDB
 
 The source repository is
 [github.com/aerialcombat/joeydb-go](https://github.com/aerialcombat/joeydb-go).
-The current public release is `v0.2.1`, including typed query/write authoring,
-durable write-encoding compatibility, and the ingestion compiler.
+The current public release is `v0.3.0`, including typed query/write authoring,
+shape-safe query results, unified error classification, semantic keys, durable
+write-encoding compatibility, and the ingestion compiler.
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.2.1
+go get github.com/aerialcombat/joeydb-go@v0.3.0
 ```
 
 The module targets Go 1.24 and uses only the standard library.
@@ -155,10 +156,34 @@ Use `joeydb.KeySuffix` normally. It applies the session's required epoch prefix
 and rejects a suffix that already contains it. `joeydb.FullKey` is the
 explicit advanced form for a complete wire key.
 
+For a stable business operation, derive the suffix without handwritten
+delimiters:
+
+```go
+key, err := joeydb.SemanticKey(
+	"task-status",
+	taskID,
+	status,
+	supersededFactID,
+)
+if err != nil {
+	return err
+}
+_, err = session.WriteRequest(ctx, key, request, nil)
+```
+
+`SemanticKey` length-frames the ordered parts under the permanent
+`github.com/aerialcombat/joeydb-go/semantic-key/v1` domain and returns a
+bounded suffix. Empty and missing parts, part boundaries, and order remain
+distinct. The caller defines semantic operation identity; the SDK does not
+derive it from request bytes. `Session` still applies the pinned epoch prefix,
+checks the final key length, and enforces exact-body replay. Do not use a
+timestamp when the operation itself has a stable business identity.
+
 ## Typed queries
 
-The `query` package covers safe object-form facts queries and the five simple
-fact-shaped returns:
+The `query` package covers safe object-form facts queries and owns typed
+responses for the five simple fact-shaped returns:
 
 ```go
 import "github.com/aerialcombat/joeydb-go/query"
@@ -171,13 +196,23 @@ request := query.Request{
 	Return: query.Table(query.IncludeFacts),
 }
 
-var result struct {
-	Facts []struct {
-		ID, Subject, Predicate, Object string
-	} `json:"facts"`
+result, response, err := client.QueryTable(ctx, request)
+if err != nil {
+	return err
 }
-response, err := client.QueryRequest(ctx, request, &result)
+for _, fact := range result.Facts {
+	log.Printf("fact=%s %s %s %s request_id=%s",
+		fact.ID, fact.Subject, fact.Predicate, fact.Object, response.RequestID)
+}
 ```
+
+`QueryTable`, `QueryGraph`, `QueryDocument`, `QueryKV`, and `QueryColumnar`
+reject a request/helper shape mismatch before network I/O and verify the
+successful response discriminator and payload. They return the root
+`*joeydb.Response` alongside the typed result. Result structs model facts,
+shape payloads, watermark/freshness/representation metadata, planner
+decisions, stable stage accounting, and timing while tolerating additive
+unknown server fields.
 
 Strict consistency and automatic optimization are safe zero-value defaults.
 Return shape has no default, and a zero `Where` is refused; use `query.All()`
@@ -192,6 +227,7 @@ request := query.Request{
 	Return: query.Graph(query.ExcludeFacts),
 	Limit:  query.MaxResults(200),
 }
+graph, response, err := client.QueryGraph(ctx, request)
 ```
 
 The typed subset also supports numeric bounds, table/document/columnar order
@@ -236,22 +272,21 @@ func main() {
 		log.Fatal(err)
 	}
 
-	batch := ingest.Batch{
-		Schema:  ingest.SchemaV1,
-		Profile: ingest.ProfileKnowledgeProposals,
-		Producer: ingest.Producer{
+	batch := ingest.NewKnowledgeProposals(
+		ingest.Producer{
 			Name:           "notes-extractor",
 			Version:        "1.0.0",
 			RunID:          "run-2026-07-23-001",
 			SchemaIdentity: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},
-		Claims: []ingest.Claim{{
+		ingest.Claim{
 			ExternalID: "claim-1",
 			Subject:    "person:DJ",
 			Predicate:  "predicate:building",
-			Object:     ingest.Object{Entity: "project:JoeyDB"},
-		}},
-	}
+			Object:     ingest.Entity("project:JoeyDB"),
+			ConfidencePPM: ingest.ConfidencePPM(950_000),
+		},
+	)
 
 	receipt, err := session.Ingest(context.Background(), batch)
 	if err != nil {
@@ -264,10 +299,10 @@ func main() {
 
 `knowledge-proposals/v1` records provenance and a reified candidate claim; it
 does not assert the candidate triple. For an already-authorized deterministic
-import, change only:
+import, construct the trusted profile explicitly:
 
 ```go
-batch.Profile = ingest.ProfileTrustedFacts
+batch := ingest.NewTrustedFacts(producer, claims...)
 ```
 
 `trusted-facts/v1` records the same provenance and also emits the candidate
@@ -277,6 +312,33 @@ authority decision, not a database authentication role.
 For untrusted JSON, use `session.IngestJSON`. It applies the strict CLI
 decoder—including duplicate-key, null, trailing-content, Unicode-surrogate,
 depth, and size checks—before any network mutation.
+
+`ingest.Entity`, `ingest.Number`, the four artifact constructors, and
+`ingest.ConfidencePPM` remove manual union, decimal, mode/URI, and pointer
+encoding. `ingest.ValidationError` exposes deterministic `Code`, `Path`, and
+`Detail` values through `errors.As` for both strict JSON parsing and typed
+validation. These additions do not change canonical ingestion bytes or the v1
+compiler.
+
+## Unified error classification
+
+Use `Classify` when application code needs one stable switch across query,
+write, ingestion, transport, protocol, capability, retry, and context errors:
+
+```go
+info := joeydb.Classify(err)
+log.Printf("kind=%s code=%s path=%s request_id=%s",
+	info.Kind, info.Code, info.Path, info.RequestID)
+if info.MayHaveCommitted {
+	// Reconcile the same semantic key on the same pinned log identity.
+}
+```
+
+`info.Err` is the original error, so existing `errors.Is`/`errors.As`
+inspection remains available. `MayHaveCommitted` is deliberately one-way:
+true means the pinned session proved uncertainty; false is not proof of
+non-commitment for raw client writes. `Retryable` mirrors the managed JoeyDB
+flag and does not bypass the session's identity-safe retry state machine.
 
 ## Raw query and exact-write escape hatches
 
@@ -373,7 +435,7 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for the matrix and proof commands.
 ## Project Observatory migration
 
 [MIGRATION.md](docs/MIGRATION.md) shows the ingestion replacement and the safe
-v0.2.1 cutover from Observatory's legacy raw query/write maps. This repository
+v0.3.0 cutover from Observatory's legacy raw query/write maps. This repository
 does not modify Observatory.
 
 ## Verification
