@@ -263,6 +263,29 @@ func TestCompiledBytesAreDefensiveCopies(t *testing.T) {
 	}
 }
 
+func TestTypedCompileEnforcesCanonicalInputBound(t *testing.T) {
+	batch, err := Parse(fixture(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	claim := batch.Claims[0]
+	quote := strings.Repeat("x", MaxTextBytes)
+	batch.Claims = make([]Claim, 5)
+	for i := range batch.Claims {
+		batch.Claims[i] = claim
+		batch.Claims[i].ExternalID = "claim-" + string(rune('a'+i))
+		batch.Claims[i].Subject = "subject:" + string(rune('a'+i))
+		batch.Claims[i].Evidence = []Evidence{{
+			Locator: "line:" + string(rune('a'+i)),
+			Quote:   quote,
+		}}
+	}
+	if _, err := Compile(batch); err == nil ||
+		!strings.Contains(err.Error(), "canonical ingestion batch exceeds") {
+		t.Fatalf("oversized typed batch err=%v", err)
+	}
+}
+
 func TestNumericAndConfidenceBounds(t *testing.T) {
 	batch, err := Parse(fixture(t))
 	if err != nil {
@@ -350,4 +373,31 @@ func deepCopy(t *testing.T, batch Batch) Batch {
 		t.Fatal(err)
 	}
 	return clone
+}
+
+func FuzzParseNeverPanics(f *testing.F) {
+	if body, err := os.ReadFile("testdata/proposal.json"); err == nil {
+		f.Add(body)
+	}
+	f.Add([]byte(`{}`))
+	f.Add([]byte(`{"schema":null}`))
+	f.Add([]byte{0xff})
+	f.Fuzz(func(t *testing.T, data []byte) {
+		_, _ = Parse(data)
+	})
+}
+
+func BenchmarkParseAndCompile(b *testing.B) {
+	body, err := os.ReadFile("testdata/proposal.json")
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	b.SetBytes(int64(len(body)))
+	b.ResetTimer()
+	for b.Loop() {
+		if _, _, err := ParseAndCompile(body); err != nil {
+			b.Fatal(err)
+		}
+	}
 }

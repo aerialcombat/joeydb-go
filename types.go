@@ -144,6 +144,7 @@ type Introspection struct {
 	} `json:"capacity"`
 }
 
+// CapacityResource describes one bounded resource reported by introspection.
 type CapacityResource struct {
 	Used      int64  `json:"used"`
 	Max       int64  `json:"max"`
@@ -159,10 +160,12 @@ type Requirements struct {
 }
 
 // BackoffFunc returns the delay before the next attempt. Its argument is the
-// zero-based retry number (0 before attempt 2).
+// zero-based retry number (0 before attempt 2). A function supplied to a
+// concurrently used Session must be safe for concurrent use.
 type BackoffFunc func(retry int) time.Duration
 
-// SleepFunc must honor context cancellation.
+// SleepFunc must honor context cancellation. A function supplied to a
+// concurrently used Session must be safe for concurrent use.
 type SleepFunc func(context.Context, time.Duration) error
 
 // RetryPolicy is opt-in. MaxAttempts zero means one attempt and no automatic

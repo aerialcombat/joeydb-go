@@ -10,9 +10,15 @@ case "$mode" in
 		;;
 esac
 
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-module_dir=$(CDPATH= cd -- "$script_dir/.." && pwd)
-source_dir=${JOEYDB_SOURCE:-"$module_dir/../joeydb"}
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+module_dir=$(CDPATH='' cd -- "$script_dir/.." && pwd)
+if test -n "${JOEYDB_SOURCE:-}"; then
+	source_dir=$JOEYDB_SOURCE
+else
+	git_common_dir=$(git -C "$module_dir" rev-parse --path-format=absolute --git-common-dir)
+	repository_dir=$(dirname -- "$git_common_dir")
+	source_dir="$repository_dir/../joeydb"
+fi
 reference_commit=223eacc01d3707eb37c9055fa99dc359f735eeb1
 
 if test ! -d "$source_dir/.git"; then

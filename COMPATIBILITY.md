@@ -4,6 +4,7 @@
 
 | joeydb-go line | JoeyDB commit | Agent HTTP | Ingestion | Status |
 |---|---|---:|---|---|
+| `main` (unreleased) | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | client hardening; exact compiler proof retained |
 | `v0.1.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; exact fixture and live proof |
 
 This module intentionally does not claim v1 API stability.

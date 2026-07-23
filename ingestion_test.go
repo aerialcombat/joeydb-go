@@ -103,3 +103,12 @@ func TestIngestRefusesInvalidOrOversizedBeforeWrite(t *testing.T) {
 		t.Fatalf("writes=%d", writes.Load())
 	}
 }
+
+func TestIngestJSONChecksSessionBeforeCompilation(t *testing.T) {
+	session := &Session{}
+	_, err := session.IngestJSON(context.Background(), []byte(`not JSON`))
+	var refused *CapabilityError
+	if !errors.As(err, &refused) {
+		t.Fatalf("err=%T %v", err, err)
+	}
+}

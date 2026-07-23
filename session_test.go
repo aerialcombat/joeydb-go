@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -47,7 +48,7 @@ func TestRequireSafetyRefusals(t *testing.T) {
 		{"durability", func(c *Capabilities) { c.Node.Durability = "mystery" }, Requirements{}},
 		{"sync", func(c *Capabilities) { c.Node.SyncLevel = "none" }, Requirements{}},
 		{"request limit missing", func(c *Capabilities) { c.Limits.MaxJSONRequestBytes = 0 }, Requirements{}},
-		{"request limit unsupported", func(c *Capabilities) { c.Limits.MaxJSONRequestBytes = defaultMaxRequestBytes + 1 }, Requirements{}},
+		{"request limit unsupported", func(c *Capabilities) { c.Limits.MaxJSONRequestBytes = absoluteBodyLimit + 1 }, Requirements{}},
 		{"not writable", func(c *Capabilities) {
 			c.Node.Role = "follower"
 			c.Node.WritesAllowed = false
@@ -74,6 +75,40 @@ func TestRequireSafetyRefusals(t *testing.T) {
 				t.Fatalf("err=%T %v", err, err)
 			}
 		})
+	}
+}
+
+func TestRequireUsesConfiguredResponseBudget(t *testing.T) {
+	server := preflightServer(t, validCapabilities(), func() string { return testIdentity }, nil)
+	defer server.Close()
+	client := newTestClient(t, Config{
+		BaseURL: server.URL, MaxResponseBytes: 1 << 20,
+	})
+	_, err := client.Require(context.Background(), Requirements{Writable: true})
+	var refused *CapabilityError
+	if !errors.As(err, &refused) ||
+		!strings.Contains(refused.Reason, "response limits") {
+		t.Fatalf("err=%T %v", err, err)
+	}
+}
+
+func TestSessionCapabilitiesAreDefensiveCopies(t *testing.T) {
+	server := preflightServer(t, validCapabilities(), func() string { return testIdentity }, nil)
+	defer server.Close()
+	client := newTestClient(t, Config{BaseURL: server.URL})
+	session, err := client.Require(context.Background(), Requirements{Writable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := session.Capabilities()
+	first.Query.Find[0] = "mutated"
+	first.Write.Operations[0] = "mutated"
+	first.Errors.BodyFields[0] = "mutated"
+	second := session.Capabilities()
+	if second.Query.Find[0] != "facts" ||
+		second.Write.Operations[0] != "correct" ||
+		second.Errors.BodyFields[0] != "code" {
+		t.Fatalf("session capabilities were mutated: %+v", second)
 	}
 }
 
@@ -208,6 +243,156 @@ func TestTransportUncertaintyRetriesOnlyOnSameIdentity(t *testing.T) {
 	if writes.Load() != 2 || !response.Replayed || len(seen) != 2 ||
 		!bytes.Equal(seen[0], seen[1]) || !bytes.Equal(seen[0], body) {
 		t.Fatalf("writes=%d response=%+v seen=%q", writes.Load(), response, seen)
+	}
+}
+
+func TestPriorTransportUncertaintySurvivesLaterAPIError(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		status    int
+		body      string
+		retryable bool
+	}{
+		{
+			name: "retryable final error", status: http.StatusTooManyRequests,
+			body:      `{"error":"busy","code":"server_overloaded","retryable":true,"request_id":"final-attempt"}`,
+			retryable: true,
+		},
+		{
+			name: "non-retryable final error", status: http.StatusBadRequest,
+			body: `{"error":"rejected","code":"invalid_request","retryable":false,"request_id":"final-attempt"}`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var writes atomic.Int32
+			client := newTestClient(t, Config{
+				BaseURL: "http://example.test",
+				Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+					switch request.URL.Path {
+					case "/capabilities":
+						return jsonResponse(request, 200, encodeJSON(t, validCapabilities()), nil), nil
+					case "/introspect":
+						return jsonResponse(request, 200, encodeJSON(t, validIntrospection(testIdentity)), nil), nil
+					case "/write":
+						if writes.Add(1) == 1 {
+							return nil, io.ErrUnexpectedEOF
+						}
+						return jsonResponse(request, test.status, test.body, nil), nil
+					default:
+						return nil, errors.New("unexpected request")
+					}
+				}),
+			})
+			session, err := client.Require(context.Background(), Requirements{
+				Writable: true,
+				Retry: RetryPolicy{
+					MaxAttempts: 2,
+					Backoff:     func(int) time.Duration { return 0 },
+					Sleep:       func(context.Context, time.Duration) error { return nil },
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = session.WriteExact(
+				context.Background(), []byte(`{}`), testPrefix+"persistent-uncertainty", nil,
+			)
+			var uncertain *UncertainOperationError
+			var transport *TransportError
+			var api *APIError
+			if !errors.As(err, &uncertain) ||
+				!errors.As(uncertain.Cause, &transport) ||
+				!errors.As(uncertain.Last, &api) ||
+				api.Retryable != test.retryable ||
+				uncertain.RequestID != "final-attempt" ||
+				uncertain.UncertainRequestID == "" ||
+				uncertain.UncertainRequestID == uncertain.RequestID ||
+				writes.Load() != 2 {
+				t.Fatalf("writes=%d uncertain=%+v err=%v", writes.Load(), uncertain, err)
+			}
+		})
+	}
+}
+
+func TestTransportUncertaintyPreservesRetryStopCause(t *testing.T) {
+	client := newTestClient(t, Config{
+		BaseURL: "http://example.test",
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.Path {
+			case "/capabilities":
+				return jsonResponse(request, 200, encodeJSON(t, validCapabilities()), nil), nil
+			case "/introspect":
+				return jsonResponse(request, 200, encodeJSON(t, validIntrospection(testIdentity)), nil), nil
+			case "/write":
+				return nil, io.ErrUnexpectedEOF
+			default:
+				return nil, errors.New("unexpected request")
+			}
+		}),
+	})
+	session, err := client.Require(context.Background(), Requirements{
+		Writable: true,
+		Retry: RetryPolicy{
+			MaxAttempts: 2,
+			Backoff:     func(int) time.Duration { return 0 },
+			Sleep:       func(context.Context, time.Duration) error { return context.Canceled },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = session.WriteExact(
+		context.Background(), []byte(`{}`), testPrefix+"stopped-uncertainty", nil,
+	)
+	var uncertain *UncertainOperationError
+	if !errors.As(err, &uncertain) ||
+		!errors.Is(err, context.Canceled) ||
+		uncertain.StopCause == nil ||
+		uncertain.IdentityCause != nil ||
+		!strings.Contains(err.Error(), "retry stopped") ||
+		strings.Contains(err.Error(), "identity is unavailable") {
+		t.Fatalf("uncertain=%+v err=%v", uncertain, err)
+	}
+}
+
+func TestTransportUncertaintySurvivesInvalidBackoff(t *testing.T) {
+	client := newTestClient(t, Config{
+		BaseURL: "http://example.test",
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			switch request.URL.Path {
+			case "/capabilities":
+				return jsonResponse(request, 200, encodeJSON(t, validCapabilities()), nil), nil
+			case "/introspect":
+				return jsonResponse(request, 200, encodeJSON(t, validIntrospection(testIdentity)), nil), nil
+			case "/write":
+				return nil, io.ErrUnexpectedEOF
+			default:
+				return nil, errors.New("unexpected request")
+			}
+		}),
+	})
+	session, err := client.Require(context.Background(), Requirements{
+		Writable: true,
+		Retry: RetryPolicy{
+			MaxAttempts: 2,
+			Backoff:     func(int) time.Duration { return -time.Second },
+			Sleep: func(context.Context, time.Duration) error {
+				t.Fatal("sleep called for invalid backoff")
+				return nil
+			},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = session.WriteExact(
+		context.Background(), []byte(`{}`), testPrefix+"invalid-backoff", nil,
+	)
+	var uncertain *UncertainOperationError
+	if !errors.As(err, &uncertain) ||
+		uncertain.StopCause == nil ||
+		!strings.Contains(uncertain.StopCause.Error(), "must not be negative") {
+		t.Fatalf("uncertain=%+v err=%v", uncertain, err)
 	}
 }
 
@@ -441,6 +626,14 @@ func TestRetryPolicyBounds(t *testing.T) {
 	var refused *CapabilityError
 	if !errors.As(err, &refused) {
 		t.Fatalf("err=%v", err)
+	}
+	policy, err := ConservativeRetryPolicy().normalized()
+	if err != nil ||
+		policy.MaxAttempts != 3 ||
+		policy.Backoff(0) != 50*time.Millisecond ||
+		policy.Backoff(1) != 100*time.Millisecond ||
+		policy.Sleep == nil {
+		t.Fatalf("policy=%+v err=%v", policy, err)
 	}
 }
 

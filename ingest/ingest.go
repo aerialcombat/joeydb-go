@@ -53,6 +53,7 @@ type Batch struct {
 	Claims   []Claim  `json:"claims"`
 }
 
+// Producer identifies the software and run that produced a batch.
 type Producer struct {
 	Name           string `json:"name"`
 	Version        string `json:"version"`
@@ -60,17 +61,20 @@ type Producer struct {
 	SchemaIdentity string `json:"schema_identity"`
 }
 
+// Source identifies the source material and its artifact-retention rule.
 type Source struct {
 	Digest    string   `json:"digest"`
 	MediaType string   `json:"media_type"`
 	Artifact  Artifact `json:"artifact"`
 }
 
+// Artifact selects how a source artifact is retained or referenced.
 type Artifact struct {
 	Mode string `json:"mode"`
 	URI  string `json:"uri,omitempty"`
 }
 
+// Claim is one candidate fact and its optional confidence and evidence.
 type Claim struct {
 	ExternalID    string     `json:"external_id"`
 	Subject       string     `json:"subject"`
@@ -80,11 +84,13 @@ type Claim struct {
 	Evidence      []Evidence `json:"evidence,omitempty"`
 }
 
+// Object contains exactly one entity label or canonical decimal u64.
 type Object struct {
 	Entity string `json:"entity,omitempty"`
 	U64    string `json:"u64,omitempty"`
 }
 
+// Evidence identifies supporting material within the batch source.
 type Evidence struct {
 	Locator string `json:"locator"`
 	Quote   string `json:"quote,omitempty"`
@@ -109,7 +115,8 @@ type claimIdentity struct {
 
 // Compiled is a deterministic ingestion compilation. Byte slices are kept
 // private so callers cannot accidentally mutate the bytes later submitted
-// under the derived idempotency key.
+// under the derived idempotency key. Exported metadata is descriptive;
+// changing it does not change CanonicalBytes or WriteBytes.
 type Compiled struct {
 	BatchDigest        string
 	WriteDigest        string
@@ -175,21 +182,36 @@ func ParseAndCompile(data []byte) (Batch, Compiled, error) {
 	if err != nil {
 		return Batch{}, Compiled{}, err
 	}
-	compiled, err := Compile(batch)
+	compiled, err := compileValidated(batch, false)
 	if err != nil {
 		return Batch{}, Compiled{}, err
 	}
 	return batch, compiled, nil
 }
 
-// Compile validates and deterministically compiles a typed batch.
+// Compile validates and deterministically compiles a typed batch. Its
+// canonical representation must fit MaxInputBytes.
 func Compile(batch Batch) (Compiled, error) {
+	if typedBatchExceedsInputLimit(batch) {
+		return Compiled{}, fmt.Errorf(
+			"canonical ingestion batch exceeds the %d-byte input limit", MaxInputBytes,
+		)
+	}
 	if err := Validate(batch); err != nil {
 		return Compiled{}, err
 	}
+	return compileValidated(batch, true)
+}
+
+func compileValidated(batch Batch, enforceCanonicalLimit bool) (Compiled, error) {
 	canonical, err := json.Marshal(batch)
 	if err != nil {
 		return Compiled{}, fmt.Errorf("canonicalize batch: %w", err)
+	}
+	if enforceCanonicalLimit && len(canonical) > MaxInputBytes {
+		return Compiled{}, fmt.Errorf(
+			"canonical ingestion batch exceeds the %d-byte input limit", MaxInputBytes,
+		)
 	}
 	batchDigest := digest(canonical)
 	writeBody, producerEntity, sourceEntity, claimEntities, recordCount, err := compile(batch, canonical, batchDigest)
@@ -207,6 +229,56 @@ func Compile(batch Batch) (Compiled, error) {
 		canonicalBatchJSON: canonical,
 		writeJSON:          writeBody,
 	}, nil
+}
+
+func typedBatchExceedsInputLimit(batch Batch) bool {
+	remaining := MaxInputBytes
+	consume := func(size int) bool {
+		if size > remaining {
+			return true
+		}
+		remaining -= size
+		return false
+	}
+	for _, value := range []string{
+		batch.Schema,
+		batch.Profile,
+		batch.Producer.Name,
+		batch.Producer.Version,
+		batch.Producer.RunID,
+		batch.Producer.SchemaIdentity,
+	} {
+		if consume(len(value)) {
+			return true
+		}
+	}
+	if batch.Source != nil {
+		if consume(1) ||
+			consume(len(batch.Source.Digest)) ||
+			consume(len(batch.Source.MediaType)) ||
+			consume(len(batch.Source.Artifact.Mode)) ||
+			consume(len(batch.Source.Artifact.URI)) {
+			return true
+		}
+	}
+	for _, claim := range batch.Claims {
+		if consume(1) ||
+			consume(len(claim.ExternalID)) ||
+			consume(len(claim.Subject)) ||
+			consume(len(claim.Predicate)) ||
+			consume(len(claim.Object.Entity)) ||
+			consume(len(claim.Object.U64)) {
+			return true
+		}
+		for _, evidence := range claim.Evidence {
+			if consume(1) ||
+				consume(len(evidence.Locator)) ||
+				consume(len(evidence.Quote)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // Validate applies all cross-field and current JoeyDB write-surface rules.

@@ -2,6 +2,7 @@ package ingest
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestReferenceCLICompatibility is opt-in so the ordinary module suite remains
@@ -37,9 +39,7 @@ func TestReferenceCLICompatibility(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		command := exec.Command(cli, "ingest", "validate")
-		command.Stdin = bytes.NewReader(body)
-		output, err := command.CombinedOutput()
+		output, err := runReferenceValidation(t, cli, body)
 		if err != nil {
 			t.Fatalf("reference CLI rejected %s: %v\n%s", fixture.name, err, output)
 		}
@@ -86,9 +86,7 @@ func TestReferenceCLICompatibility(t *testing.T) {
 		if _, _, err := ParseAndCompile(body); err == nil {
 			t.Fatalf("library accepted invalid fixture %s", fixture.name)
 		}
-		command := exec.Command(cli, "ingest", "validate")
-		command.Stdin = bytes.NewReader(body)
-		output, err := command.CombinedOutput()
+		output, err := runReferenceValidation(t, cli, body)
 		var exitErr *exec.ExitError
 		if err == nil || !errors.As(err, &exitErr) || exitErr.ExitCode() == 0 {
 			t.Fatalf("reference CLI accepted invalid fixture %s: %v\n%s", fixture.name, err, output)
@@ -97,4 +95,17 @@ func TestReferenceCLICompatibility(t *testing.T) {
 			t.Fatalf("reference CLI rejection was not an ingestion validation error: %s", output)
 		}
 	}
+}
+
+func runReferenceValidation(t *testing.T, cli string, body []byte) ([]byte, error) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, cli, "ingest", "validate")
+	command.Stdin = bytes.NewReader(body)
+	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("reference CLI timed out: %v\n%s", ctx.Err(), output)
+	}
+	return output, err
 }
