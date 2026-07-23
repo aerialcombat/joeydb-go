@@ -10,15 +10,15 @@ joey --url <url> ingest --file <temp>
 Add the immutable public module version:
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.2.0
+go get github.com/aerialcombat/joeydb-go@v0.2.1
 ```
 
 Do not commit a local `replace` directive for adoption. Development workspaces
 may temporarily reference a checkout, but the committed dependency should
 resolve through the published version.
 
-`v0.2.0` contains both the ingestion/transport migration and the typed
-query/write migration below.
+`v0.2.1` contains both the ingestion/transport migration and the typed
+query/write migration below, plus the durable typed-write encoding contract.
 
 The smallest safe follow-up replaces only that adapter. Keep Observatory’s
 domain-to-ingestion mapping and metrics unchanged initially.
@@ -98,11 +98,40 @@ which:
 3. the second result reports `replayed:true`;
 4. both receipts have the same watermark and digests.
 
-That is the exact-body compatibility bridge used by this module’s live test.
+That is the exact-body compatibility bridge used by this module’s live test
+for ingestion. It does not prove that Observatory's ordinary legacy
+`json.Marshal(map[string]any{...})` writes match typed `write.Request` bytes.
 
-## Typed v0.2 follow-up
+## Existing ordinary-write receipts
 
-With immutable `v0.2.0`, update Observatory's adapter to accept
+Do not reuse an existing durable Observatory write key with a newly encoded
+typed request unless exact byte equality has been proven. The old adapter
+marshals maps, so Go sorts JSON object keys. The typed encoder uses a pinned
+struct-field order. For example, the two heartbeat bodies represent the same
+JSON value but have different bytes and JoeyDB correctly returns
+`idempotency_conflict`.
+
+Choose one transition deliberately:
+
+1. Keep the original raw body and complete wire key, and use
+   `Session.WriteExact` whenever an existing receipt may need replay or
+   reconciliation.
+2. Cut over in a fresh JoeyDB database epoch, whose required key prefix creates
+   a new receipt namespace.
+3. Introduce an audited application key domain only for operations whose
+   re-execution is known to be safe.
+
+Changing only the key does not make a mutation semantically idempotent. In
+particular, append writes can create duplicate facts. Inventory durable legacy
+keys and classify mutation behavior before choosing option 3.
+
+`write.EncodingDomain` identifies the typed byte mapping as
+`github.com/aerialcombat/joeydb-go/write/v1`. It is metadata for audit and
+persistence; the SDK does not silently add it to a key.
+
+## Typed v0.2.1 follow-up
+
+With immutable `v0.2.1`, update Observatory's adapter to accept
 `query.Request` and `write.Request` and delegate to:
 
 ```go
@@ -233,10 +262,10 @@ or graph output.
 
 Before merging that consumer PR:
 
-1. pin `github.com/aerialcombat/joeydb-go v0.2.0` without `replace`;
+1. pin `github.com/aerialcombat/joeydb-go v0.2.1` without `replace`;
 2. run Observatory's unit/race/live gates;
-3. assert the SDK's typed live requests replay against the old exact bodies
-   where a durable key already exists;
+3. retain original raw bodies for existing receipts or select a fresh database
+   epoch or audited key-domain transition;
 4. retain application metrics around the SDK transport;
 5. verify no application JoeyDB request construction still calls
    `json.Marshal` or uses `map[string]any`.

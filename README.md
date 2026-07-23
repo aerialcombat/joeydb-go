@@ -11,11 +11,11 @@ The initial compatibility target is JoeyDB
 
 The source repository is
 [github.com/aerialcombat/joeydb-go](https://github.com/aerialcombat/joeydb-go).
-The current public release is `v0.2.0`, including typed query/write authoring
-and the ingestion compiler.
+The current public release is `v0.2.1`, including typed query/write authoring,
+durable write-encoding compatibility, and the ingestion compiler.
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.2.0
+go get github.com/aerialcombat/joeydb-go@v0.2.1
 ```
 
 The module targets Go 1.24 and uses only the standard library.
@@ -82,6 +82,19 @@ Construction performs no I/O. `Session.WriteRequest` validates, encodes once,
 checks the request's operations/modes/object/deadline vocabulary against the
 pinned capability snapshot, applies the advertised idempotency prefix, and
 passes the exact bytes to the existing identity-safe retry engine.
+
+`write.EncodingDomain` names the permanent
+`github.com/aerialcombat/joeydb-go/write/v1` byte mapping first published in
+`v0.2.0`. Existing request semantics in that domain retain identical bytes
+across releases because JoeyDB stores an exact-body digest with every durable
+idempotency receipt. The domain is descriptive metadata; it is not inserted
+into request JSON or keys.
+
+JSON values that are semantically equal are not necessarily replay compatible.
+In particular, Go's `json.Marshal(map[string]any{...})` sorts object keys
+differently from the typed encoder. Keep the original raw body when reconciling
+an existing key. A typed cutover needs proven byte equality, a fresh database
+epoch, or an explicitly audited key transition whose re-execution is safe.
 
 Objects and mutations use private union states with small constructors:
 
@@ -327,7 +340,10 @@ The API starts at v0:
 - minor v0 releases may refine exported APIs with release notes;
 - ingestion byte compatibility is stricter than Go API compatibility;
 - already-published `joeydb.ingestion/v1` output must not change;
-- an incompatible compiler requires a new ingestion schema version.
+- an incompatible compiler requires a new ingestion schema version;
+- existing `write.EncodingDomain` request semantics retain exact bytes;
+- an incompatible typed-write mapping requires a new encoding domain and an
+  explicit receipt migration plan.
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for the matrix and proof commands.
 
@@ -356,9 +372,9 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for the matrix and proof commands.
 
 ## Project Observatory migration
 
-[MIGRATION.md](docs/MIGRATION.md) shows both the released v0.1 ingestion
-replacement and the planned v0.2 removal of Observatory's raw query/write
-maps. This repository does not modify Observatory.
+[MIGRATION.md](docs/MIGRATION.md) shows the ingestion replacement and the safe
+v0.2.1 cutover from Observatory's legacy raw query/write maps. This repository
+does not modify Observatory.
 
 ## Verification
 

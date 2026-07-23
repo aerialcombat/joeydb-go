@@ -101,7 +101,9 @@ type wireVocabulary struct {
 	OnUnknown VocabularyMode `json:"on_unknown"`
 }
 
-// Encode validates and returns one deterministic compact JSON request.
+// Encode validates and returns one deterministic compact JSON request in
+// EncodingDomain. The returned bytes are a durable compatibility contract
+// because JoeyDB idempotency receipts retain an exact-body digest.
 func (request Request) Encode() ([]byte, error) {
 	if err := request.Validate(); err != nil {
 		return nil, err

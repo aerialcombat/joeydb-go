@@ -5,6 +5,29 @@ policy. Ingestion byte compatibility is stricter than the Go API version.
 
 ## Unreleased
 
+## v0.2.1 — 2026-07-23
+
+### Added
+
+- Export `write.EncodingDomain` to name the exact typed-write byte mapping
+  first published in `v0.2.0`.
+- Pin every published v0.2.0 typed-write fixture by exact bytes and SHA-256
+  across future releases.
+- Prove that Observatory's legacy map encoding is semantically equivalent but
+  not exact-body replay compatible with the typed heartbeat request.
+
+### Fixed
+
+- Correct the Observatory migration guide: existing durable write keys require
+  their original raw bodies, a fresh database epoch, or an explicitly audited
+  transition; swapping to typed encoding can cause `idempotency_conflict`.
+
+### Changed
+
+- Define typed-write encoding as a durable receipt compatibility contract.
+  Incompatible mappings now require a new encoding domain, explicit opt-in,
+  and a migration plan rather than a silent v0 encoder change.
+
 ## v0.2.0 — 2026-07-23
 
 ### Added

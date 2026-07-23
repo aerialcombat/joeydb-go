@@ -4,7 +4,8 @@
 
 | joeydb-go line | JoeyDB commit | Agent HTTP | Ingestion | Status |
 |---|---|---:|---|---|
-| `v0.2.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; typed authoring plus hardened transport/compiler proofs |
+| `v0.2.1` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; durable typed-write encoding domain and cross-release fixtures |
+| `v0.2.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; original typed authoring bytes now named write encoding v1 |
 | `v0.1.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; exact fixture and live proof |
 
 This module intentionally does not claim v1 API stability.
@@ -13,11 +14,11 @@ This module intentionally does not claim v1 API stability.
 
 - Repository: <https://github.com/aerialcombat/joeydb-go>
 - Module: `github.com/aerialcombat/joeydb-go`
-- Version: `v0.2.0`
-- Release ref: immutable tag `v0.2.0`
+- Version: `v0.2.1`
+- Release ref: immutable tag `v0.2.1`
 - Go version: 1.24
 
-The `v0.2.0` tag is immutable. Documentation and implementation changes after
+The `v0.2.1` tag is immutable. Documentation and implementation changes after
 that tag require a later version before downstream consumers can obtain them as
 part of a released module.
 
@@ -75,7 +76,7 @@ over a unique temporary database, and proves:
 - stable watermark/log identity across restart;
 - retry refusal after a replacement database changes log identity.
 
-The v0.2.0 proof also:
+The v0.2 proof also:
 
 - submits every stable facts-write operation through `write.Request`;
 - parses typed table, graph, and numeric queries through the real daemon;
@@ -100,6 +101,32 @@ therefore requires a new ingestion schema/compiler domain, not a silent v1
 revision.
 
 Typed authoring encodings are versioned Go SDK behavior rather than the
-language-neutral ingestion schema. They are pinned by reviewed golden tests and
-the protocol-3 daemon. The API remains at v0 stability despite the immutable
-v0.2.0 publication.
+language-neutral ingestion schema. Typed query bytes remain deterministic SDK
+behavior, but typed write bytes additionally become durable database state when
+JoeyDB records an idempotency key and its exact-body digest.
+
+`write.EncodingDomain` permanently names the mapping first published in
+`v0.2.0`:
+
+```text
+github.com/aerialcombat/joeydb-go/write/v1
+```
+
+For every request semantic accepted by that release, later implementations of
+the same domain must emit identical bytes. Additive request forms may be added
+without changing existing output. Reordering fields, changing omission rules,
+changing decimal representation, or otherwise changing bytes for an existing
+request requires:
+
+1. a new encoding domain and explicit caller opt-in;
+2. retained support for replaying or reconstructing the old domain where
+   promised;
+3. an idempotency-key and database-epoch migration plan.
+
+The v0.2.0 JSON fixtures and their body SHA-256 values are pinned by
+`TestEncodingV1PreservesPublishedV020Bytes`. They are cross-release fixtures,
+not update-in-place snapshots.
+
+This contract is stricter than the module's v0 Go API policy. A semantic-version
+allowance for breaking Go APIs does not permit silently changing bytes already
+retained by JoeyDB receipts.
