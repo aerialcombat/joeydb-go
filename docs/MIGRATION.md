@@ -10,15 +10,16 @@ joey --url <url> ingest --file <temp>
 Add the immutable public module version:
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.2.1
+go get github.com/aerialcombat/joeydb-go@v0.3.0
 ```
 
 Do not commit a local `replace` directive for adoption. Development workspaces
 may temporarily reference a checkout, but the committed dependency should
 resolve through the published version.
 
-`v0.2.1` contains both the ingestion/transport migration and the typed
-query/write migration below, plus the durable typed-write encoding contract.
+`v0.3.0` contains the ingestion/transport migration, typed query/write
+authoring, shape-safe query results, unified error classification, semantic
+keys, and the durable typed-write encoding contract.
 
 The smallest safe follow-up replaces only that adapter. Keep Observatory’s
 domain-to-ingestion mapping and metrics unchanged initially.
@@ -129,9 +130,9 @@ keys and classify mutation behavior before choosing option 3.
 `github.com/aerialcombat/joeydb-go/write/v1`. It is metadata for audit and
 persistence; the SDK does not silently add it to a key.
 
-## Typed v0.2.1 follow-up
+## Typed v0.3.0 follow-up
 
-With immutable `v0.2.1`, update Observatory's adapter to accept
+With immutable `v0.3.0`, update Observatory's adapter to accept
 `query.Request` and `write.Request` and delegate to:
 
 ```go
@@ -262,7 +263,7 @@ or graph output.
 
 Before merging that consumer PR:
 
-1. pin `github.com/aerialcombat/joeydb-go v0.2.1` without `replace`;
+1. pin `github.com/aerialcombat/joeydb-go v0.3.0` without `replace`;
 2. run Observatory's unit/race/live gates;
 3. retain original raw bodies for existing receipts or select a fresh database
    epoch or audited key-domain transition;
@@ -270,10 +271,10 @@ Before merging that consumer PR:
 5. verify no application JoeyDB request construction still calls
    `json.Marshal` or uses `map[string]any`.
 
-## Unreleased developer/agent experience follow-up
+## v0.3.0 developer/agent experience follow-up
 
-The repository's unreleased developer/agent experience slice removes three
-more reusable adapters once it is available under an immutable version:
+The v0.3.0 developer/agent experience slice removes three more reusable
+adapters:
 
 1. replace Observatory's local `Fact`/`QueryResult` structs with
    `query.Fact`, `query.TableResult`, and the appropriate shape helper;
@@ -294,6 +295,6 @@ if err != nil {
 _, err = client.WriteRequest(ctx, key, writeRequest, nil)
 ```
 
-Do not point the actual Observatory branch at this checkout or commit a local
-`replace`. First publish an immutable follow-up version, then use a disposable
-compatibility worktree to prove source and live behavior before adoption.
+Adopt immutable `v0.3.0` without a local `replace`, then use a disposable
+compatibility worktree to prove source and live behavior before modifying the
+actual Observatory branch.

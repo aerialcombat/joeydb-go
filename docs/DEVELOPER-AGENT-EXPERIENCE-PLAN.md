@@ -3,7 +3,7 @@
 Status: implementation plan
 SDK baseline: `v0.2.1` at `cbe042b993bb96e34b2816a7d4f66c9720f2f21e`
 JoeyDB compatibility source: `223eacc01d3707eb37c9055fa99dc359f735eeb1`
-Target release line: a later additive v0 release; this work does not tag or publish one
+Target release: `v0.3.0`
 
 This document records the measure, design, and independent design challenge for the
 first developer/agent experience slice. It is also the review record for the public

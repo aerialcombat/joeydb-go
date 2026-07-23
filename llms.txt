@@ -1,13 +1,9 @@
 # joeydb-go agent guide
 
 Module: github.com/aerialcombat/joeydb-go
-Current immutable release: v0.2.1
+Current immutable release: v0.3.0
 Compatibility target: JoeyDB 223eacc01d3707eb37c9055fa99dc359f735eeb1,
 Agent HTTP protocol 3
-
-This file describes the current unreleased branch. The developer/agent
-experience APIs below require a later immutable release before external
-adoption; do not commit a local replace directive.
 
 This module is a daemon HTTP/JSON client. It is not an embedded database and
 does not import JoeyDB internal packages.

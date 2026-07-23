@@ -5,6 +5,8 @@ policy. Ingestion byte compatibility is stricter than the Go API version.
 
 ## Unreleased
 
+## v0.3.0 — 2026-07-23
+
 ### Added
 
 - Add SDK-owned response models and shape-safe execution helpers for table,

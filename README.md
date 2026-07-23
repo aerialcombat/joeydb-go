@@ -11,11 +11,12 @@ The initial compatibility target is JoeyDB
 
 The source repository is
 [github.com/aerialcombat/joeydb-go](https://github.com/aerialcombat/joeydb-go).
-The current public release is `v0.2.1`, including typed query/write authoring,
-durable write-encoding compatibility, and the ingestion compiler.
+The current public release is `v0.3.0`, including typed query/write authoring,
+shape-safe query results, unified error classification, semantic keys, durable
+write-encoding compatibility, and the ingestion compiler.
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.2.1
+go get github.com/aerialcombat/joeydb-go@v0.3.0
 ```
 
 The module targets Go 1.24 and uses only the standard library.
@@ -26,11 +27,6 @@ notes.
 
 The default branch may contain unreleased fixes. See
 [CHANGELOG.md](CHANGELOG.md) before selecting a version.
-
-This checkout includes an unreleased developer/agent experience slice:
-shape-safe query results, unified error classification, semantic keys, and
-ingestion constructors. External consumers should wait for a later immutable
-version; do not commit a local `replace` to adopt these APIs.
 
 ## Typed writes
 
@@ -439,7 +435,7 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for the matrix and proof commands.
 ## Project Observatory migration
 
 [MIGRATION.md](docs/MIGRATION.md) shows the ingestion replacement and the safe
-v0.2.1 cutover from Observatory's legacy raw query/write maps. This repository
+v0.3.0 cutover from Observatory's legacy raw query/write maps. This repository
 does not modify Observatory.
 
 ## Verification
