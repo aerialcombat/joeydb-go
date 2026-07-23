@@ -2,6 +2,15 @@ package write
 
 import "time"
 
+// EncodingDomain permanently identifies the exact JSON byte mapping used by
+// Request.Encode. It was first published in joeydb-go v0.2.0.
+//
+// The value is metadata only: it is not added to request JSON or idempotency
+// keys. Existing Request semantics must retain identical encoded bytes within
+// this domain. An incompatible encoder requires a new, explicitly selected
+// domain and migration plan.
+const EncodingDomain = "github.com/aerialcombat/joeydb-go/write/v1"
+
 // MaxJSSafeInteger is JoeyDB's largest public JSON numeric-object value.
 const MaxJSSafeInteger = uint64(1)<<53 - 1
 

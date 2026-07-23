@@ -45,6 +45,12 @@ Typed writes encode exactly once before capability and key checks. The owned
 encoded slice goes directly to the existing `writeExact` retry state machine;
 there is no typed retry implementation and no remarshal between attempts.
 
+`write.EncodingDomain` permanently identifies the exact byte mapping first
+published in v0.2.0. JoeyDB retains an exact-body digest with a durable
+idempotency receipt, so existing request semantics in that domain must remain
+byte-identical across SDK releases. An incompatible mapping requires a new
+domain and explicit migration; v0 API status does not relax this rule.
+
 `KeySuffix` applies the pinned required prefix exactly once. A suffix already
 starting with that prefix is refused. `FullKey` is the explicit advanced form
 and must already satisfy the prefix and byte-limit contract.
@@ -60,6 +66,11 @@ that exact slice and the same key. Ingestion compiles once and derives:
 
 Whitespace or key-order changes in a raw keyed write are body changes and can
 produce JoeyDB’s `idempotency_conflict`.
+
+The typed encoder's pinned struct order differs from Go's sorted
+`json.Marshal(map[string]any{...})` order. Semantically equal legacy map JSON
+therefore cannot be assumed to replay under an existing key. Preserve the
+original body for reconciliation or use a separately audited cutover.
 
 ## Attempt state
 

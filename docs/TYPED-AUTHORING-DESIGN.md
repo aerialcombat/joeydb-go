@@ -411,6 +411,21 @@ and numeric loopback port.
 `make preflight`, `go test -race ./... -count=3`, and bounded fuzz commands are
 the release-candidate gates.
 
+## v0.2.1 durable-encoding clarification
+
+Post-release migration review identified a distinction that the original
+design did not state strongly enough: deterministic typed JSON and
+semantically equivalent legacy JSON are not necessarily the same bytes.
+Observatory's map encoder sorts keys differently from the typed struct encoder,
+so an existing durable key can return `idempotency_conflict` during a direct
+constructor swap.
+
+The v0.2.1 contract therefore names the v0.2.0 mapping as
+`write.EncodingDomain`, pins its published bytes and SHA-256 values, and
+requires a new encoding domain plus an explicit receipt migration for any
+incompatible future mapping. Observatory must preserve legacy raw bodies for
+existing receipts or cross a fresh database epoch or audited key boundary.
+
 ## Independent design challenge
 
 Round 1 was performed by an independent Claude reviewer after this design was

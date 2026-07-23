@@ -2,8 +2,10 @@ package write
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,14 +14,19 @@ import (
 	"time"
 )
 
-func TestGoldenEncoding(t *testing.T) {
+func TestEncodingV1PreservesPublishedV020Bytes(t *testing.T) {
+	if EncodingDomain != "github.com/aerialcombat/joeydb-go/write/v1" {
+		t.Fatalf("encoding domain changed to %q", EncodingDomain)
+	}
 	absolute := time.Unix(0, 1_780_000_000_000_000_000).UTC()
 	tests := []struct {
-		name    string
-		request Request
+		name       string
+		bodySHA256 string
+		request    Request
 	}{
 		{
-			name: "heartbeat",
+			name:       "heartbeat",
+			bodySHA256: "663ac555451b8ae9c036b66c3d37fb57c34bd2dd59728b4349829f7b0b3836d8",
 			request: Request{
 				Records: []Record{{
 					Subject: "worker:git-ingestion", Predicate: "obs:heartbeat",
@@ -30,7 +37,8 @@ func TestGoldenEncoding(t *testing.T) {
 			},
 		},
 		{
-			name: "task",
+			name:       "task",
+			bodySHA256: "d9152541e4140f935ec50c514169082d2104560723400e3440920e253e9f5cce",
 			request: Request{
 				Records: []Record{
 					{
@@ -50,7 +58,8 @@ func TestGoldenEncoding(t *testing.T) {
 			},
 		},
 		{
-			name: "mutations",
+			name:       "mutations",
+			bodySHA256: "0d35d9ff4009a18fd10689e877755adac9dd4f497433527f557900da3441b053",
 			request: Request{
 				Records: []Record{
 					{
@@ -88,21 +97,24 @@ func TestGoldenEncoding(t *testing.T) {
 			},
 		},
 		{
-			name: "transaction-zero",
+			name:       "transaction-zero",
+			bodySHA256: "3b6a41b127d7462a4fbc2cca83e4c8d893675f659e078b1739c0d299859cdbb4",
 			request: Request{
 				Retractions:     []Retraction{RetractFact("1")},
 				TransactionTime: TransactionNanoseconds(0),
 			},
 		},
 		{
-			name: "transaction-time",
+			name:       "transaction-time",
+			bodySHA256: "60cbfd1ca255c7fe62e948e1c3b965ebb8763a9013927cdacd40dff6630ffbde",
 			request: Request{
 				Retractions:     []Retraction{RetractFact("2")},
 				TransactionTime: AtTransactionTime(absolute),
 			},
 		},
 		{
-			name: "reject",
+			name:       "reject",
+			bodySHA256: "acdcb39bf10f422e6cbad1160a5274fcdf06f33f1fcc6d863064cac876331176",
 			request: Request{
 				Records: []Record{{
 					Subject: "subject:known", Predicate: "predicate:known",
@@ -123,9 +135,14 @@ func TestGoldenEncoding(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want = bytes.TrimSpace(want)
+			want = bytes.TrimSuffix(want, []byte("\n"))
 			if !bytes.Equal(got, want) {
 				t.Fatalf("encoding mismatch\n got: %s\nwant: %s", got, want)
+			}
+			digest := sha256.Sum256(got)
+			if gotDigest := fmt.Sprintf("%x", digest); gotDigest != test.bodySHA256 {
+				t.Fatalf("body digest=%s, want published v0.2.0 digest=%s",
+					gotDigest, test.bodySHA256)
 			}
 			viaJSON, err := json.Marshal(test.request)
 			if err != nil {
@@ -139,6 +156,51 @@ func TestGoldenEncoding(t *testing.T) {
 				t.Fatalf("encoding is not deterministic: %s / %s / %v", got, again, err)
 			}
 		})
+	}
+}
+
+func TestEncodingV1LegacyMapBodyIsNotReplayCompatible(t *testing.T) {
+	request := Request{
+		Records: []Record{{
+			Subject: "worker:git-ingestion", Predicate: "obs:heartbeat",
+			Object:     Entity("service:project-observatory"),
+			Expiration: After(30 * time.Second),
+		}},
+		Vocabulary: CreateUnknown,
+	}
+	typedBody, err := request.Encode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyBody, err := json.Marshal(map[string]any{
+		"write": "facts",
+		"record": []any{
+			map[string]any{
+				"subject":   "worker:git-ingestion",
+				"predicate": "obs:heartbeat",
+				"object":    "service:project-observatory",
+				"ttl_ms":    "30000",
+			},
+		},
+		"vocabulary": map[string]string{"on_unknown": "create"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(typedBody, legacyBody) {
+		t.Fatal("test premise failed: typed and legacy bodies unexpectedly match")
+	}
+
+	var typedValue, legacyValue any
+	if err := json.Unmarshal(typedBody, &typedValue); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(legacyBody, &legacyValue); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(typedValue, legacyValue) {
+		t.Fatalf("requests differ semantically\ntyped: %s\nlegacy: %s",
+			typedBody, legacyBody)
 	}
 }
 
