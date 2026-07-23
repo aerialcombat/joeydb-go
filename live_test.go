@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"github.com/aerialcombat/joeydb-go/ingest"
+	querypkg "github.com/aerialcombat/joeydb-go/query"
+	writepkg "github.com/aerialcombat/joeydb-go/write"
 )
 
 // TestLiveCompatibility is the opt-in black-box proof against binaries built
@@ -148,6 +150,280 @@ func TestLiveCompatibility(t *testing.T) {
 		uncertain.ObservedIdentity == firstIdentity {
 		t.Fatalf("changed-log retry was not refused: uncertain=%+v err=%v", uncertain, err)
 	}
+}
+
+// TestLiveTypedAuthoring proves the typed v0.2 subset against the exact
+// reference daemon, including keyed replay and replay after restart.
+func TestLiveTypedAuthoring(t *testing.T) {
+	daemonBinary := os.Getenv("JOEYDBD_REFERENCE_BINARY")
+	if daemonBinary == "" {
+		t.Skip("run make live or set JOEYDBD_REFERENCE_BINARY")
+	}
+	port := freeLoopbackPort(t)
+	baseURL := "http://127.0.0.1:" + port
+	database := filepath.Join(t.TempDir(), "typed.joeydb")
+
+	daemon := startReferenceDaemon(t, daemonBinary, database, baseURL, true)
+	defer func() { daemon.stop(t) }()
+
+	client := newTestClient(t, Config{BaseURL: baseURL, Timeout: 5 * time.Second})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	session, err := client.Require(ctx, Requirements{
+		Writable: true,
+		Retry: RetryPolicy{
+			MaxAttempts: 2,
+			Backoff:     func(int) time.Duration { return time.Millisecond },
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := session.LogIdentity()
+
+	seed := writepkg.Request{
+		Records: []writepkg.Record{
+			{
+				Subject: "worker:typed", Predicate: "obs:heartbeat",
+				Object:     writepkg.Entity("service:typed"),
+				Expiration: writepkg.After(time.Hour),
+			},
+			{
+				Subject: "set:typed", Predicate: "obs:member",
+				Object: writepkg.Entity("thing:typed"), Mode: writepkg.Ensure,
+			},
+			{
+				Subject: "hash:typed", Predicate: "obs:status",
+				Object: writepkg.Entity("status:open"), Mode: writepkg.Replace,
+			},
+			{
+				Subject: "metric:typed", Predicate: "obs:value",
+				Object: writepkg.Number(42),
+			},
+			{
+				Subject: "task:typed", Predicate: "obs:status",
+				Object: writepkg.Entity("status:old"),
+			},
+			{
+				Subject: "fact:temporary", Predicate: "obs:state",
+				Object: writepkg.Entity("state:active"),
+			},
+			{
+				Subject: "fact:absolute", Predicate: "obs:state",
+				Object: writepkg.Entity("state:active"),
+			},
+			{
+				Subject: "event:typed", Predicate: "obs:description",
+				Object: writepkg.Entity("description:typed"),
+				Tense:  "tense:present", RawText: "typed authoring",
+				Expiration: writepkg.At(
+					time.Date(2200, time.January, 1, 0, 0, 0, 0, time.UTC),
+				),
+			},
+		},
+		Vocabulary:      writepkg.CreateUnknown,
+		TransactionTime: writepkg.TransactionNanoseconds(0),
+	}
+	seedResult := liveTypedWrite(t, ctx, session, "typed:seed", seed)
+	factIDs := make(map[string]string)
+	for _, fact := range seedResult.Facts {
+		factIDs[fact.Subject+"\x00"+fact.Predicate] = fact.ID
+	}
+	required := func(subject, predicate string) string {
+		t.Helper()
+		id := factIDs[subject+"\x00"+predicate]
+		if id == "" {
+			t.Fatalf("seed response lacks %s/%s: %+v", subject, predicate, seedResult)
+		}
+		return id
+	}
+
+	if count := liveTypedFactCount(t, ctx, client, querypkg.Request{
+		Where: querypkg.Where{
+			Predicate: querypkg.Labels("obs:member"),
+			Object:    querypkg.Labels("thing:typed"),
+		},
+		Return: querypkg.Table(querypkg.IncludeFacts),
+	}); count != 1 {
+		t.Fatalf("typed table query count=%d, want 1", count)
+	}
+	for name, result := range map[string]querypkg.Return{
+		"table":    querypkg.Table(),
+		"graph":    querypkg.Graph(),
+		"document": querypkg.Document(),
+		"kv":       querypkg.KV(),
+		"columnar": querypkg.Columnar(),
+	} {
+		t.Run("return-"+name, func(t *testing.T) {
+			if count := liveTypedFactCount(t, ctx, client, querypkg.Request{
+				Where:  querypkg.Where{Predicate: querypkg.Labels("obs:member")},
+				Return: result,
+			}); count != 1 {
+				t.Fatalf("%s return count=%d, want 1", name, count)
+			}
+		})
+	}
+	var graph struct {
+		Facts []json.RawMessage `json:"facts"`
+		Graph struct {
+			Edges []json.RawMessage `json:"edges"`
+		} `json:"graph"`
+	}
+	if _, err := client.QueryRequest(ctx, querypkg.Request{
+		Where:  querypkg.Where{Predicate: querypkg.Labels("obs:member")},
+		Return: querypkg.Graph(querypkg.ExcludeFacts),
+		Limit:  querypkg.MaxResults(20),
+	}, &graph); err != nil {
+		t.Fatal(err)
+	}
+	if len(graph.Facts) != 0 || len(graph.Graph.Edges) != 1 {
+		t.Fatalf("typed graph response=%+v", graph)
+	}
+	if count := liveTypedFactCount(t, ctx, client, querypkg.Request{
+		Where:          whereWithNumberRange(),
+		Return:         querypkg.Table(),
+		Optimization:   querypkg.Force(querypkg.PrimitiveScan),
+		ReadConstraint: querypkg.ReadAfter(seedResult.Watermark, identity),
+		Limit:          querypkg.MaxResults(10),
+		Order: []querypkg.Order{{
+			By: querypkg.ByObjectNumber, Direction: querypkg.Descending,
+		}},
+	}); count != 1 {
+		t.Fatalf("numeric typed query count=%d, want 1", count)
+	}
+	liveTypedWrite(t, ctx, session, "typed:reject-vocabulary", writepkg.Request{
+		Records: []writepkg.Record{{
+			Subject: "set:typed", Predicate: "obs:member",
+			Object: writepkg.Entity("thing:typed"),
+		}},
+		Vocabulary: writepkg.RejectUnknown,
+	})
+
+	liveTypedWrite(t, ctx, session, "typed:correct", writepkg.Request{
+		Corrections: []writepkg.Correction{
+			writepkg.Correct(required("task:typed", "obs:status"), writepkg.Record{
+				Subject: "task:typed", Predicate: "obs:status",
+				Object: writepkg.Entity("status:done"),
+			}),
+		},
+		Vocabulary: writepkg.CreateUnknown,
+	})
+	if count := liveTypedFactCount(t, ctx, client, querypkg.Request{
+		Where: querypkg.Where{
+			Subject:   querypkg.Labels("task:typed"),
+			Predicate: querypkg.Labels("obs:status"),
+			Object:    querypkg.Labels("status:done"),
+		},
+		Return: querypkg.Table(),
+	}); count != 1 {
+		t.Fatalf("correction result count=%d, want 1", count)
+	}
+
+	liveTypedWrite(t, ctx, session, "typed:retract-fact", writepkg.Request{
+		Retractions: []writepkg.Retraction{
+			writepkg.RetractFact(required("worker:typed", "obs:heartbeat")),
+		},
+	})
+	liveTypedWrite(t, ctx, session, "typed:retract-exact", writepkg.Request{
+		Retractions: []writepkg.Retraction{
+			writepkg.RetractExact(
+				"set:typed", "obs:member", writepkg.Entity("thing:typed"),
+			),
+		},
+	})
+	liveTypedWrite(t, ctx, session, "typed:retract-exact-number", writepkg.Request{
+		Retractions: []writepkg.Retraction{
+			writepkg.RetractExact("metric:typed", "obs:value", writepkg.Number(42)),
+		},
+	})
+	liveTypedWrite(t, ctx, session, "typed:retract-slot", writepkg.Request{
+		Retractions: []writepkg.Retraction{
+			writepkg.RetractSlot("hash:typed", "obs:status"),
+		},
+	})
+	temporaryID := required("fact:temporary", "obs:state")
+	liveTypedWrite(t, ctx, session, "typed:expire", writepkg.Request{
+		Expirations: []writepkg.Expiration{
+			writepkg.ExpireAfter(temporaryID, time.Hour),
+		},
+	})
+	liveTypedWrite(t, ctx, session, "typed:persist", writepkg.Request{
+		Persistence: []writepkg.Persistence{writepkg.Persist(temporaryID)},
+	})
+	liveTypedWrite(t, ctx, session, "typed:expire-at", writepkg.Request{
+		Expirations: []writepkg.Expiration{
+			writepkg.ExpireAt(
+				required("fact:absolute", "obs:state"),
+				time.Date(2200, time.January, 1, 0, 0, 0, 0, time.UTC),
+			),
+		},
+	})
+
+	daemon.stop(t)
+	daemon = startReferenceDaemon(t, daemonBinary, database, baseURL, false)
+	var restart writepkg.Response
+	response, err := session.WriteRequest(
+		ctx, KeySuffix("typed:seed"), seed, &restart,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.Replayed || restart.Watermark != seedResult.Watermark ||
+		restart.LogIdentity != identity {
+		t.Fatalf("restart replay response=%+v result=%+v seed=%+v",
+			response, restart, seedResult)
+	}
+}
+
+func whereWithNumberRange() querypkg.Where {
+	return querypkg.Where{ObjectNumber: &querypkg.NumericRange{}}
+}
+
+func liveTypedWrite(
+	t *testing.T,
+	ctx context.Context,
+	session *Session,
+	key string,
+	request writepkg.Request,
+) writepkg.Response {
+	t.Helper()
+	var first writepkg.Response
+	response, err := session.WriteRequest(ctx, KeySuffix(key), request, &first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Replayed {
+		t.Fatalf("first typed write %q replayed", key)
+	}
+	var replay writepkg.Response
+	response, err = session.WriteRequest(ctx, KeySuffix(key), request, &replay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !response.Replayed || replay.Watermark != first.Watermark ||
+		replay.LogIdentity != first.LogIdentity {
+		t.Fatalf("typed replay %q response=%+v first=%+v replay=%+v",
+			key, response, first, replay)
+	}
+	return first
+}
+
+func liveTypedFactCount(
+	t *testing.T,
+	ctx context.Context,
+	client *Client,
+	request querypkg.Request,
+) int {
+	t.Helper()
+	var response struct {
+		Metadata struct {
+			FactCount int `json:"fact_count"`
+		} `json:"metadata"`
+	}
+	if _, err := client.QueryRequest(ctx, request, &response); err != nil {
+		t.Fatal(err)
+	}
+	return response.Metadata.FactCount
 }
 
 type referenceDaemon struct {

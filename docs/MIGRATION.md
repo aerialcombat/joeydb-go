@@ -17,6 +17,10 @@ Do not commit a local `replace` directive for adoption. Development workspaces
 may temporarily reference a checkout, but the committed dependency should
 resolve through the published version.
 
+`v0.1.0` contains the ingestion/transport migration below. The typed
+query/write migration is unreleased; wait for an immutable `v0.2.0` before
+committing it in Observatory.
+
 The smallest safe follow-up replaces only that adapter. Keep Observatory’s
 domain-to-ingestion mapping and metrics unchanged initially.
 
@@ -96,3 +100,144 @@ which:
 4. both receipts have the same watermark and digests.
 
 That is the exact-body compatibility bridge used by this module’s live test.
+
+## Typed v0.2 follow-up
+
+After `v0.2.0` is immutable, update Observatory's adapter to accept
+`query.Request` and `write.Request` and delegate to:
+
+```go
+func (c *Client) QueryRequest(
+	ctx context.Context,
+	request query.Request,
+	out any,
+) error {
+	_, err := c.sdk.QueryRequest(ctx, request, out)
+	return err
+}
+
+func (c *Client) WriteRequest(
+	ctx context.Context,
+	key joeydb.WriteKey,
+	request write.Request,
+	out any,
+) (*joeydb.Response, error) {
+	session, err := c.Session()
+	if err != nil {
+		return nil, err
+	}
+	return session.WriteRequest(ctx, key, request, out)
+}
+```
+
+Delete the adapter's manual `RequiredKeyPrefix` read/concatenation. Callers use
+`joeydb.KeySuffix`; only tests or advanced integrations holding a complete
+wire key use `joeydb.FullKey`.
+
+### Heartbeat
+
+```go
+request := write.Request{
+	Records: []write.Record{{
+		Subject: "worker:git-ingestion", Predicate: "obs:heartbeat",
+		Object: write.Entity("service:project-observatory"),
+		Expiration: write.After(30 * time.Second),
+	}},
+	Vocabulary: write.CreateUnknown,
+}
+_, err := client.WriteRequest(
+	ctx,
+	joeydb.KeySuffix(fmt.Sprintf("obs:heartbeat:%d", time.Now().UnixMilli())),
+	request,
+	nil,
+)
+```
+
+This removes both `map[string]any` and the ignored `json.Marshal` error.
+
+### Fact queries
+
+Replace `Facts(ctx, map[string]string)` with a typed `query.Where` parameter:
+
+```go
+request := query.Request{
+	Where: query.Where{
+		Subject:   query.Labels(task),
+		Predicate: query.Labels("obs:status"),
+	},
+	Return: query.Table(query.IncludeFacts),
+}
+err := client.QueryRequest(ctx, request, &result)
+```
+
+Call sites set only the positions they need. The relationship graph becomes:
+
+```go
+request := query.Request{
+	Where:  query.Where{Predicate: query.Labels("obs:belongs_to_project")},
+	Return: query.Graph(query.ExcludeFacts),
+	Limit:  query.MaxResults(200),
+}
+```
+
+### Task creation
+
+```go
+request := write.Request{
+	Records: []write.Record{
+		{
+			Subject: id, Predicate: "obs:task_project",
+			Object: write.Entity(project), Mode: write.Ensure,
+		},
+		{
+			Subject: id, Predicate: "obs:title",
+			Object: write.Entity(domain.Text(title)), Mode: write.Ensure,
+		},
+		{
+			Subject: id, Predicate: "obs:status",
+			Object: write.Entity("status:open"), Mode: write.Replace,
+		},
+	},
+	Vocabulary: write.CreateUnknown,
+}
+_, err := client.WriteRequest(
+	ctx,
+	joeydb.KeySuffix("obs:task:"+domain.Digest(project+"\x00"+title)),
+	request,
+	nil,
+)
+```
+
+### Correction and retraction
+
+```go
+correction := write.Request{
+	Corrections: []write.Correction{
+		write.Correct(factID, write.Record{
+			Subject: task, Predicate: "obs:status",
+			Object: write.Entity("status:"+status),
+		}),
+	},
+	Vocabulary: write.CreateUnknown,
+}
+
+retraction := write.Request{
+	Retractions: []write.Retraction{write.RetractFact(factID)},
+}
+```
+
+The later Observatory change can remove `CorrectionRequest`,
+`RetractionRequest`, all direct JoeyDB `json.Marshal` calls, and all
+request-authoring `map[string]any` values in one focused PR. Keep raw response
+maps only where Observatory intentionally renders unconstrained introspection
+or graph output.
+
+Before merging that consumer PR:
+
+1. pin `github.com/aerialcombat/joeydb-go v0.2.0` without `replace`;
+2. run Observatory's unit/race/live gates;
+3. assert the SDK's typed live requests replay against the old exact bodies
+   where a durable key already exists;
+4. retain application metrics around the SDK transport;
+5. verify no application JoeyDB request construction still calls
+   `json.Marshal` or uses `map[string]any`.

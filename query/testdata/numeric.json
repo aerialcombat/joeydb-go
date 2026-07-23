@@ -1,0 +1,1 @@
+{"find":"facts","where":{"subject":"sensor:1","object_number":{"gte":"20","lt":"10"}},"return":{"shape":"columnar"},"consistency":"allow_stale","optimize":{"mode":"force","representation":"columnar"},"required_watermark":7,"log_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","limit":25,"order":[{"by":"object_number","dir":"desc"}],"offset":2}

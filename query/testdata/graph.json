@@ -1,0 +1,1 @@
+{"find":"facts","where":{"predicate":"obs:belongs_to_project","object":["project:1","project:2"]},"return":{"shape":"graph","include_facts":false},"consistency":"strict","optimize":{"mode":"auto"},"limit":200}

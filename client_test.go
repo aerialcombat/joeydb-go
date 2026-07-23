@@ -382,12 +382,26 @@ func validCapabilities() Capabilities {
 	capabilities.Node.SyncLevel = "os"
 	capabilities.Limits.MaxJSONRequestBytes = 1 << 20
 	capabilities.Query.Find = []string{"facts"}
+	capabilities.Query.WhereForms = []string{"triple"}
+	capabilities.Query.WhereFields = []string{"object", "object_number", "predicate", "subject"}
+	capabilities.Query.Clauses = []string{
+		"include_facts", "limit", "log_identity", "offset", "order", "required_watermark",
+	}
+	capabilities.Query.NumericBounds = []string{"gt", "gte", "lt", "lte"}
+	capabilities.Query.OrderKeys = []string{"id", "object", "object_number", "predicate", "subject"}
+	capabilities.Query.ReturnShapes = []string{"columnar", "document", "graph", "kv", "table"}
 	capabilities.Query.Consistency = []string{"allow_stale", "fresh", "strict"}
 	capabilities.Query.OptimizeModes = []string{"auto", "force"}
+	capabilities.Query.Representations = []string{
+		"columnar", "document", "graph", "kv", "primitive_scan", "table",
+	}
 	capabilities.Write.Write = []string{"facts"}
 	capabilities.Write.Operations = []string{"correct", "expire", "persist", "record", "retract"}
+	capabilities.Write.ObjectKinds = []string{"entity_label", "u64"}
+	capabilities.Write.ExpirationForms = []string{"expires_at_ns", "ttl_ms"}
 	capabilities.Write.RecordModes = []string{"append", "ensure", "replace"}
 	capabilities.Write.VocabularyModes = []string{"create", "reject"}
+	capabilities.Write.RetractSelectors = []string{"fact", "slot", "where"}
 	capabilities.Write.Idempotency.Supported = true
 	capabilities.Write.Idempotency.KeyHeader = IdempotencyKeyHeader
 	capabilities.Write.Idempotency.ReplayHeader = IdempotencyReplayHeader

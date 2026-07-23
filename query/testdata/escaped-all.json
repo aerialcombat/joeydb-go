@@ -1,0 +1,1 @@
+{"find":"facts","where":{"subject":"??literal"},"return":{"shape":"document"},"consistency":"fresh","optimize":{"mode":"force","representation":"primitive_scan"},"log_identity":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}

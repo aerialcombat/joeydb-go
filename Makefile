@@ -3,7 +3,7 @@ SHELL := /bin/sh
 .PHONY: fmt-check vet test race compatibility live preflight
 
 fmt-check:
-	@test -z "$$(gofmt -l -- *.go ingest/*.go)"
+	@test -z "$$(gofmt -l -- *.go ingest/*.go query/*.go write/*.go)"
 
 vet:
 	go vet ./...

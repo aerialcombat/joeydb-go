@@ -1,0 +1,1 @@
+{"write":"facts","record":[{"subject":"worker:git-ingestion","predicate":"obs:heartbeat","object":"service:project-observatory","ttl_ms":"30000"}],"vocabulary":{"on_unknown":"create"}}
