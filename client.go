@@ -243,7 +243,13 @@ func validateKeySyntax(key string, maxBytes int, prefix string) error {
 		return &InvalidKeyError{Key: key, Reason: "must be 1-128 characters using letters, digits, '.', '_', ':', or '-'"}
 	}
 	if maxBytes <= 0 || len(key) > maxBytes {
-		return &InvalidKeyError{Key: key, Reason: fmt.Sprintf("exceeds advertised %d-byte limit", maxBytes)}
+		return &InvalidKeyError{
+			Key: key,
+			Reason: fmt.Sprintf(
+				"exceeds advertised %d-byte limit; shorten the logical suffix or semantic namespace",
+				maxBytes,
+			),
+		}
 	}
 	if prefix != "" && (!strings.HasPrefix(key, prefix) || len(key) == len(prefix)) {
 		return &InvalidKeyError{Key: key, Reason: fmt.Sprintf("must begin with %q and include a suffix", prefix)}

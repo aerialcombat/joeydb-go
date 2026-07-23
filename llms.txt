@@ -1,0 +1,160 @@
+# joeydb-go agent guide
+
+Module: github.com/aerialcombat/joeydb-go
+Current immutable release: v0.2.1
+Compatibility target: JoeyDB 223eacc01d3707eb37c9055fa99dc359f735eeb1,
+Agent HTTP protocol 3
+
+This file describes the current unreleased branch. The developer/agent
+experience APIs below require a later immutable release before external
+adoption; do not commit a local replace directive.
+
+This module is a daemon HTTP/JSON client. It is not an embedded database and
+does not import JoeyDB internal packages.
+
+## Choose an API
+
+- Read stable simple facts: author with package query and execute with
+  Client.QueryTable, QueryGraph, QueryDocument, QueryKV, or QueryColumnar.
+- Write stable facts/mutations: author with package write and execute through a
+  pinned Session.WriteRequest.
+- Submit joeydb.ingestion/v1 knowledge proposals or trusted facts: construct
+  with package ingest and execute Session.Ingest or Session.IngestJSON.
+- Use Client.Query/QueryJSON/QueryRequest or
+  Client.Write/KeyedWrite/Session.WriteExact only for intentionally raw or
+  advanced protocol features.
+
+Raw-only query features include scalar, exists, entity-page, aggregate,
+cursor, bindings, traversal, joins, OR, and compact payload formats.
+
+## Establish access
+
+Construction performs no network I/O:
+
+    client, err := joeydb.NewClient(joeydb.Config{
+        BaseURL: "http://127.0.0.1:7415",
+    })
+
+Read-only preflight:
+
+    session, err := client.Require(ctx, joeydb.Requirements{})
+
+Writable preflight:
+
+    session, err := client.Require(ctx, joeydb.Requirements{
+        Writable: true,
+        Retry: joeydb.ConservativeRetryPolicy(), // opt-in
+    })
+
+Ingestion-safe preflight:
+
+    session, err := client.Require(ctx, joeydb.Requirements{
+        Writable: true,
+        Ingestion: true,
+        Retry: joeydb.ConservativeRetryPolicy(),
+    })
+
+Require discovers capabilities and pins log identity. A writable Session owns
+prefix application, exact-body retries, and identity checks.
+
+## Query and decode
+
+The helper must match the authored return shape:
+
+    request := query.Request{
+        Where: query.Where{Predicate: query.Labels("obs:status")},
+        Return: query.Table(query.IncludeFacts),
+    }
+    result, response, err := client.QueryTable(ctx, request)
+
+The five explicit helpers return query.TableResult, GraphResult,
+DocumentResult, KVResult, or ColumnarResult plus the root HTTP Response.
+Request/helper mismatch fails before I/O. Unknown additive response fields and
+unknown string enum values are tolerated.
+
+See the executable ExampleClient_QueryTable, QueryGraph, QueryDocument,
+QueryKV, and QueryColumnar examples in package documentation.
+
+## Write and semantic identity
+
+Author typed values; do not use map[string]any for stable production requests:
+
+    request := write.Request{
+        Records: []write.Record{{
+            Subject: "task:1", Predicate: "obs:status",
+            Object: write.Entity("status:queued"),
+        }},
+        Vocabulary: write.CreateUnknown,
+    }
+
+Derive identity from the business operation, not request bytes:
+
+    key, err := joeydb.SemanticKey(
+        "task-status", taskID, status, supersededFactID,
+    )
+    response, err := session.WriteRequest(ctx, key, request, &receipt)
+
+SemanticKey uses the permanent
+github.com/aerialcombat/joeydb-go/semantic-key/v1 domain. Part order, presence,
+boundaries, and exact bytes are part of the caller's identity contract. Empty
+parts are valid and distinct from missing parts. Session applies the epoch
+prefix and checks the combined limit.
+
+Never use a timestamp as identity for a stable business operation. Never
+manually apply RequiredKeyPrefix. Never derive a new key merely because a
+request is being retried.
+
+## Ingestion
+
+Keep knowledge proposals, trusted facts, and raw facts writes distinct:
+
+    batch := ingest.NewKnowledgeProposals(producer, ingest.Claim{
+        ExternalID: "claim-1",
+        Subject: "service:web",
+        Predicate: "obs:status",
+        Object: ingest.Entity("status:healthy"),
+        ConfidencePPM: ingest.ConfidencePPM(950_000),
+    })
+    receipt, err := session.Ingest(ctx, batch)
+
+Use NewTrustedFacts only when application authority permits direct assertion.
+Use ingest.Number for u64 objects and CopyArtifact, LinkArtifact,
+PurgeArtifact, or NoArtifact for source artifact policy.
+
+## Inspect errors
+
+    info := joeydb.Classify(err)
+    log.Printf("kind=%s code=%s path=%s request_id=%s",
+        info.Kind, info.Code, info.Path, info.RequestID)
+
+ErrorInfo.Err is the original error, so errors.Is/errors.As still work.
+Validation errors expose stable Code, Path, and Detail. Retain RequestID for
+correlation.
+
+If info.MayHaveCommitted is true, the pinned session could not prove the keyed
+write outcome. Reconcile the same key against the same log identity. Do not
+retry with a new key and do not accept a changed or unavailable log identity.
+False is not proof of non-commitment for raw client writes.
+
+ErrorInfo.Retryable mirrors the managed server flag. It is not permission to
+bypass Session retry/identity rules.
+
+## Permanent bytes
+
+- write.EncodingDomain is exactly
+  github.com/aerialcombat/joeydb-go/write/v1.
+- Existing semantics in that write domain retain byte-identical encoding.
+- joeydb.ingestion/v1 canonical and compiled bytes, digests, identities, and
+  record counts are pinned to the reference CLI/compiler.
+- SemanticKeyDomain and its golden derivation are permanent.
+
+Never remarshal a keyed body between attempts. Never reuse an existing durable
+key with differently ordered JSON. Never retry an uncertain operation under a
+different key or log identity.
+
+## Further context
+
+- README.md: user guide and examples
+- docs/SAFETY.md: retry, uncertainty, and preflight model
+- COMPATIBILITY.md: byte domains and exact compatibility evidence
+- docs/DEVELOPER-AGENT-EXPERIENCE-PLAN.md: measured design and challenge record

@@ -4,6 +4,7 @@
 
 | joeydb-go line | JoeyDB commit | Agent HTTP | Ingestion | Status |
 |---|---|---:|---|---|
+| unreleased | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | local developer/agent experience slice; not tagged or published |
 | `v0.2.1` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; durable typed-write encoding domain and cross-release fixtures |
 | `v0.2.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; original typed authoring bytes now named write encoding v1 |
 | `v0.1.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; exact fixture and live proof |
@@ -130,3 +131,30 @@ not update-in-place snapshots.
 This contract is stricter than the module's v0 Go API policy. A semantic-version
 allowance for breaking Go APIs does not permit silently changing bytes already
 retained by JoeyDB receipts.
+
+## Developer/agent experience compatibility domains
+
+The unreleased typed response structs are additive decoders for JoeyDB's five
+stable simple fact-shaped results at the compatibility commit. They use direct
+`encoding/json` decoding and tolerate additive unknown fields and unknown
+future string enum values. Shape-safe helpers verify only the response
+discriminator and required payload presence; they do not reject additive
+server data.
+
+Semantic operation keys have their own permanent derivation domain:
+
+```text
+github.com/aerialcombat/joeydb-go/semantic-key/v1
+```
+
+The domain, eight-byte big-endian length framing, ordered part count, SHA-256,
+unpadded base64url digest, and `<namespace>:<digest>` suffix are pinned by
+reviewed golden fixtures. This domain does not include
+`write.EncodingDomain` or request bytes. Changing it requires a new explicitly
+named semantic-key domain; updating a v1 fixture in place is not permitted.
+
+The ingestion constructors populate and deep-copy the existing public v1
+structs. Structured error classification changes diagnostics, not compiler
+input. The established ingestion fixtures continue to pin canonical bytes,
+compiled write bytes, batch/write digests, generated identities, and record
+counts.

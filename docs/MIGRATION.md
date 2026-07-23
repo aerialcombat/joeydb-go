@@ -269,3 +269,31 @@ Before merging that consumer PR:
 4. retain application metrics around the SDK transport;
 5. verify no application JoeyDB request construction still calls
    `json.Marshal` or uses `map[string]any`.
+
+## Unreleased developer/agent experience follow-up
+
+The repository's unreleased developer/agent experience slice removes three
+more reusable adapters once it is available under an immutable version:
+
+1. replace Observatory's local `Fact`/`QueryResult` structs with
+   `query.Fact`, `query.TableResult`, and the appropriate shape helper;
+2. replace NUL-delimited `domain.Digest` key framing with `SemanticKey`, after
+   preserving or explicitly transitioning every existing durable key domain;
+3. replace the local partial error classifier with `joeydb.Classify`, while
+   keeping application metrics and domain policy outside the SDK.
+
+The candidate query and semantic-key call sites become:
+
+```go
+result, response, err := sdk.QueryTable(ctx, request)
+
+key, err := joeydb.SemanticKey("task-create", project, title)
+if err != nil {
+	return err
+}
+_, err = client.WriteRequest(ctx, key, writeRequest, nil)
+```
+
+Do not point the actual Observatory branch at this checkout or commit a local
+`replace`. First publish an immutable follow-up version, then use a disposable
+compatibility worktree to prove source and live behavior before adoption.

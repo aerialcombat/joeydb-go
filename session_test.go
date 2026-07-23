@@ -466,11 +466,17 @@ func TestContextCancellationDuringBackoff(t *testing.T) {
 		})
 	defer server.Close()
 	client := newTestClient(t, Config{BaseURL: server.URL})
+	backoffStarted := make(chan struct{})
 	session, err := client.Require(context.Background(), Requirements{
 		Writable: true,
 		Retry: RetryPolicy{
 			MaxAttempts: 2,
 			Backoff:     func(int) time.Duration { return time.Hour },
+			Sleep: func(ctx context.Context, _ time.Duration) error {
+				close(backoffStarted)
+				<-ctx.Done()
+				return ctx.Err()
+			},
 		},
 	})
 	if err != nil {
@@ -478,7 +484,7 @@ func TestContextCancellationDuringBackoff(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
-		time.Sleep(10 * time.Millisecond)
+		<-backoffStarted
 		cancel()
 	}()
 	_, err = session.WriteExact(ctx, []byte(`{}`), testPrefix+"backoff", nil)

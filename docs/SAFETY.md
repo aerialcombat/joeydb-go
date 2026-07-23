@@ -55,6 +55,32 @@ domain and explicit migration; v0 API status does not relax this rule.
 starting with that prefix is refused. `FullKey` is the explicit advanced form
 and must already satisfy the prefix and byte-limit contract.
 
+`SemanticKey` is the normal helper when a write has an application-defined
+business identity. It hashes a low-cardinality namespace and an ordered,
+length-framed part sequence under a permanent domain, then returns a logical
+`WriteKey` suffix. Empty parts are valid and distinct from omitted parts.
+Neither request bytes nor `write.EncodingDomain` are silently included.
+
+The caller remains responsible for choosing the operation identity. A
+timestamp usually describes an attempt, not a deterministic business
+operation. Deriving a different key after uncertainty risks committing the
+same operation twice. The pinned session still applies the log-epoch prefix
+and validates the combined key length; an otherwise valid semantic suffix may
+need a shorter namespace when the advertised prefix leaves less room.
+
+## Typed query result boundary
+
+`QueryTable`, `QueryGraph`, `QueryDocument`, `QueryKV`, and `QueryColumnar`
+compare the request return shape before transport. An otherwise-invalid
+request retains its normal validation error; a valid request passed to the
+wrong helper returns `result_shape_mismatch` with no HTTP request.
+
+Successful responses are decoded directly into the selected typed struct.
+Unknown additive fields and unknown string enum values are tolerated. A wrong
+response discriminator or omitted selected payload is a `ProtocolError`
+retaining the root response and request ID. `Client.QueryRequest` remains the
+unguarded caller-defined decoding escape hatch for advanced result shapes.
+
 ## Exact-body rule
 
 `Session.WriteExact` copies the caller’s body once at entry. Every attempt uses
@@ -139,6 +165,17 @@ detail, a bounded raw-body prefix, and truncation/malformed markers.
 `RetryStoppedError` retains both the last JoeyDB response and the local
 cancellation/backoff cause.
 `RequestIDFromError` extracts the final known correlation ID.
+
+`Classify` provides one non-destructive machine-readable view across all SDK
+errors. `ErrorInfo.Err` is the exact original error; callers can still use
+`errors.Is` and `errors.As`. Wrapper classification precedes nested causes, so
+an uncertain write containing a transport or context error remains uncertain,
+and a stopped retry remains retry-stopped.
+
+`ErrorInfo.Retryable` mirrors only JoeyDB's managed `retryable` flag, matching
+`IsRetryable`; it is not permission to bypass session identity checks.
+`MayHaveCommitted` is true when the pinned session protocol proves an
+uncertain outcome. False is not proof that a raw client write did not commit.
 
 Injected request-ID generators, retry backoff functions, retry sleep functions,
 HTTP clients, and transports must be safe for concurrent use when their client
