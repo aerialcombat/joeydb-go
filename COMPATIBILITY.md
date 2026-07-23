@@ -4,9 +4,21 @@
 
 | joeydb-go line | JoeyDB commit | Agent HTTP | Ingestion | Status |
 |---|---|---:|---|---|
-| v0 development | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | exact fixture and live proof |
+| `v0.1.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; exact fixture and live proof |
 
 This module intentionally does not claim v1 API stability.
+
+## Published release
+
+- Repository: <https://github.com/aerialcombat/joeydb-go>
+- Module: `github.com/aerialcombat/joeydb-go`
+- Version: `v0.1.0`
+- Release commit: `4f7fd8d0e8edb73109833065b5b46b38e382530f`
+- Go version: 1.24
+
+The `v0.1.0` tag is immutable. Documentation and implementation changes after
+that tag require a later version before downstream consumers can obtain them as
+part of a released module.
 
 ## Oracle and implementation state
 

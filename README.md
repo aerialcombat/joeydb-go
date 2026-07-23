@@ -9,13 +9,19 @@ The initial compatibility target is JoeyDB
 
 ## Install
 
-After the first v0 tag is published:
+The source repository is
+[github.com/aerialcombat/joeydb-go](https://github.com/aerialcombat/joeydb-go).
+The current public release is `v0.1.0`.
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0
+go get github.com/aerialcombat/joeydb-go@v0.1.0
 ```
 
 The module targets Go 1.24 and uses only the standard library.
+
+Pin an immutable version in applications. The API remains at v0 stability, so
+future v0 releases may include breaking changes documented in their release
+notes.
 
 ## Safe ingestion
 
