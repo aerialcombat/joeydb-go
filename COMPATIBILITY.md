@@ -4,7 +4,7 @@
 
 | joeydb-go line | JoeyDB commit | Agent HTTP | Ingestion | Status |
 |---|---|---:|---|---|
-| `main` (unreleased v0.2 line) | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | typed authoring plus hardened transport/compiler proofs |
+| `v0.2.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; typed authoring plus hardened transport/compiler proofs |
 | `v0.1.0` | `223eacc01d3707eb37c9055fa99dc359f735eeb1` | protocol 3 | `joeydb.ingestion/v1` | published; exact fixture and live proof |
 
 This module intentionally does not claim v1 API stability.
@@ -13,11 +13,11 @@ This module intentionally does not claim v1 API stability.
 
 - Repository: <https://github.com/aerialcombat/joeydb-go>
 - Module: `github.com/aerialcombat/joeydb-go`
-- Version: `v0.1.0`
-- Release commit: `4f7fd8d0e8edb73109833065b5b46b38e382530f`
+- Version: `v0.2.0`
+- Release ref: immutable tag `v0.2.0`
 - Go version: 1.24
 
-The `v0.1.0` tag is immutable. Documentation and implementation changes after
+The `v0.2.0` tag is immutable. Documentation and implementation changes after
 that tag require a later version before downstream consumers can obtain them as
 part of a released module.
 
@@ -75,7 +75,7 @@ over a unique temporary database, and proves:
 - stable watermark/log identity across restart;
 - retry refusal after a replacement database changes log identity.
 
-The unreleased v0.2 proof also:
+The v0.2.0 proof also:
 
 - submits every stable facts-write operation through `write.Request`;
 - parses typed table, graph, and numeric queries through the real daemon;
@@ -101,5 +101,5 @@ revision.
 
 Typed authoring encodings are versioned Go SDK behavior rather than the
 language-neutral ingestion schema. They are pinned by reviewed golden tests and
-the protocol-3 daemon, but the API remains v0 until an immutable v0.2 release is
-published and adopted.
+the protocol-3 daemon. The API remains at v0 stability despite the immutable
+v0.2.0 publication.

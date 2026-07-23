@@ -10,16 +10,15 @@ joey --url <url> ingest --file <temp>
 Add the immutable public module version:
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.1.0
+go get github.com/aerialcombat/joeydb-go@v0.2.0
 ```
 
 Do not commit a local `replace` directive for adoption. Development workspaces
 may temporarily reference a checkout, but the committed dependency should
 resolve through the published version.
 
-`v0.1.0` contains the ingestion/transport migration below. The typed
-query/write migration is unreleased; wait for an immutable `v0.2.0` before
-committing it in Observatory.
+`v0.2.0` contains both the ingestion/transport migration and the typed
+query/write migration below.
 
 The smallest safe follow-up replaces only that adapter. Keep Observatory’s
 domain-to-ingestion mapping and metrics unchanged initially.
@@ -103,7 +102,7 @@ That is the exact-body compatibility bridge used by this module’s live test.
 
 ## Typed v0.2 follow-up
 
-After `v0.2.0` is immutable, update Observatory's adapter to accept
+With immutable `v0.2.0`, update Observatory's adapter to accept
 `query.Request` and `write.Request` and delegate to:
 
 ```go

@@ -5,6 +5,8 @@ policy. Ingestion byte compatibility is stricter than the Go API version.
 
 ## Unreleased
 
+## v0.2.0 — 2026-07-23
+
 ### Added
 
 - Add network-independent `query` and `write` packages for deterministic,

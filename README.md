@@ -11,11 +11,11 @@ The initial compatibility target is JoeyDB
 
 The source repository is
 [github.com/aerialcombat/joeydb-go](https://github.com/aerialcombat/joeydb-go).
-The current public release is `v0.1.0`. Typed query/write authoring is on the
-unreleased v0.2 line and is not available from an immutable version yet.
+The current public release is `v0.2.0`, including typed query/write authoring
+and the ingestion compiler.
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.1.0
+go get github.com/aerialcombat/joeydb-go@v0.2.0
 ```
 
 The module targets Go 1.24 and uses only the standard library.
