@@ -1,0 +1,20 @@
+{
+  "schema": "joeydb.ingestion/v1",
+  "profile": "trusted-facts/v1",
+  "producer": {
+    "name": "fixture-agent",
+    "version": "1.0.0",
+    "run_id": "run-42",
+    "schema_identity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "claims": [
+    {
+      "external_id": "claim-1",
+      "subject": "ingest:forged",
+      "predicate": "predicate:building",
+      "object": {
+        "entity": "project:JoeyDB"
+      }
+    }
+  ]
+}

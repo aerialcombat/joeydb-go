@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "JoeyDB Agent Ingestion Batch v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "profile",
+    "producer",
+    "claims"
+  ],
+  "properties": {
+    "schema": {
+      "const": "joeydb.ingestion/v1"
+    },
+    "profile": {
+      "enum": [
+        "knowledge-proposals/v1",
+        "trusted-facts/v1"
+      ]
+    },
+    "producer": {
+      "$ref": "#/$defs/producer"
+    },
+    "source": {
+      "$ref": "#/$defs/source"
+    },
+    "claims": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/claim"
+      },
+      "maxItems": 4096
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "claims": {
+            "contains": {
+              "type": "object",
+              "required": [
+                "evidence"
+              ],
+              "properties": {
+                "evidence": {
+                  "type": "array",
+                  "minItems": 1
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "source"
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "nonempty": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "user_label": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/nonempty"
+        },
+        {
+          "not": {
+            "pattern": "^(ingest:|ingestion:sha256:|claim:sha256:|producer:sha256:|source:sha256:|media-type:)"
+          }
+        }
+      ]
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "version",
+        "run_id",
+        "schema_identity"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "version": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "run_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "schema_identity": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "digest",
+        "media_type",
+        "artifact"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "media_type": {
+          "type": "string",
+          "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+$",
+          "maxLength": 4096
+        },
+        "artifact": {
+          "$ref": "#/$defs/artifact"
+        }
+      }
+    },
+    "artifact": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "uri"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "copy",
+                "link"
+              ]
+            },
+            "uri": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 262144
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "purge",
+                "none"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "external_id",
+        "subject",
+        "predicate",
+        "object"
+      ],
+      "properties": {
+        "external_id": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "subject": {
+          "$ref": "#/$defs/user_label"
+        },
+        "predicate": {
+          "$ref": "#/$defs/user_label"
+        },
+        "object": {
+          "$ref": "#/$defs/object"
+        },
+        "confidence_ppm": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000
+        },
+        "evidence": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "object": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "entity"
+          ],
+          "properties": {
+            "entity": {
+              "$ref": "#/$defs/user_label"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "u64"
+          ],
+          "properties": {
+            "u64": {
+              "type": "string",
+              "pattern": "^(0|[1-9][0-9]*)$",
+              "maxLength": 16
+            }
+          }
+        }
+      ]
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "locator"
+      ],
+      "properties": {
+        "locator": {
+          "$ref": "#/$defs/nonempty"
+        },
+        "quote": {
+          "type": "string",
+          "maxLength": 262144
+        }
+      }
+    }
+  }
+}

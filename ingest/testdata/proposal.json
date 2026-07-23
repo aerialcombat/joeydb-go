@@ -1,0 +1,43 @@
+{
+  "schema": "joeydb.ingestion/v1",
+  "profile": "knowledge-proposals/v1",
+  "producer": {
+    "name": "fixture-agent",
+    "version": "1.0.0",
+    "run_id": "run-42",
+    "schema_identity": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "source": {
+    "digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "media_type": "text/markdown",
+    "artifact": {
+      "mode": "link",
+      "uri": "file:///notes/example.md"
+    }
+  },
+  "claims": [
+    {
+      "external_id": "claim-1",
+      "subject": "person:DJ",
+      "predicate": "predicate:building",
+      "object": {
+        "entity": "project:JoeyDB"
+      },
+      "confidence_ppm": 950000,
+      "evidence": [
+        {
+          "locator": "line:3",
+          "quote": "DJ is building JoeyDB."
+        }
+      ]
+    },
+    {
+      "external_id": "claim-2",
+      "subject": "project:JoeyDB",
+      "predicate": "predicate:stars",
+      "object": {
+        "u64": "42"
+      }
+    }
+  ]
+}
