@@ -19,7 +19,8 @@ func decodeStrict(data []byte, target any) error {
 	if err := rejectUnpairedJSONSurrogates(data); err != nil {
 		return err
 	}
-	if err := rejectDuplicateKeys(data); err != nil {
+	hasNull, err := inspectJSON(data)
+	if err != nil {
 		return err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
@@ -31,19 +32,16 @@ func decodeStrict(data []byte, target any) error {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return errors.New("trailing content after object")
 	}
-	var generic any
-	if err := json.Unmarshal(data, &generic); err != nil {
-		return err
-	}
-	if containsNull(generic) {
+	if hasNull {
 		return errors.New("explicit null values are not allowed")
 	}
 	return nil
 }
 
-func rejectDuplicateKeys(data []byte) error {
+func inspectJSON(data []byte) (bool, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.UseNumber()
+	hasNull := false
 	var walk func(int) error
 	walk = func(depth int) error {
 		if depth > MaxJSONDepth {
@@ -52,6 +50,10 @@ func rejectDuplicateKeys(data []byte) error {
 		token, err := decoder.Token()
 		if err != nil {
 			return err
+		}
+		if token == nil {
+			hasNull = true
+			return nil
 		}
 		delim, ok := token.(json.Delim)
 		if !ok {
@@ -91,7 +93,8 @@ func rejectDuplicateKeys(data []byte) error {
 			return fmt.Errorf("unexpected delimiter %q", delim)
 		}
 	}
-	return walk(1)
+	err := walk(1)
+	return hasNull, err
 }
 
 func rejectUnpairedJSONSurrogates(data []byte) error {
@@ -150,24 +153,4 @@ func parseJSONHex4(data []byte) (uint16, bool) {
 		}
 	}
 	return value, true
-}
-
-func containsNull(value any) bool {
-	switch typed := value.(type) {
-	case nil:
-		return true
-	case map[string]any:
-		for _, item := range typed {
-			if containsNull(item) {
-				return true
-			}
-		}
-	case []any:
-		for _, item := range typed {
-			if containsNull(item) {
-				return true
-			}
-		}
-	}
-	return false
 }

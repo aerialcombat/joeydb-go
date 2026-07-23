@@ -23,6 +23,9 @@ Pin an immutable version in applications. The API remains at v0 stability, so
 future v0 releases may include breaking changes documented in their release
 notes.
 
+The default branch may contain unreleased fixes. See
+[CHANGELOG.md](CHANGELOG.md) before selecting a version.
+
 ## Safe ingestion
 
 ```go
@@ -128,6 +131,8 @@ checks, bounded retry, and log-identity pinning.
   request limits, machine errors, request correlation, and the exact-body
   idempotency contract, then pins the live log identity.
 - Every retry reuses one copied body and key. No retry remarshal occurs.
+- Once a transport or successful-response failure makes an outcome uncertain,
+  later error responses cannot silently clear that uncertainty.
 - After transport uncertainty or a retryable response, the session rechecks
   the pinned identity before retry. A changed or unavailable identity returns
   `*joeydb.UncertainOperationError`.

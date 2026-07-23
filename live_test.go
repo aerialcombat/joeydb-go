@@ -176,7 +176,7 @@ func startReferenceDaemon(t *testing.T, binary, database, baseURL string, initia
 		response, err := (&http.Client{Timeout: 200 * time.Millisecond}).Do(request)
 		if err == nil {
 			_, _ = io.Copy(io.Discard, response.Body)
-			response.Body.Close()
+			_ = response.Body.Close()
 			if response.StatusCode == http.StatusOK {
 				return daemon
 			}
@@ -241,9 +241,14 @@ func liveFactCount(t *testing.T, client *Client, query string) int {
 
 func runReferenceCLIIngest(t *testing.T, binary, baseURL string, body []byte) IngestionReceipt {
 	t.Helper()
-	command := exec.Command(binary, "--url", baseURL, "ingest")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, binary, "--url", baseURL, "ingest")
 	command.Stdin = bytes.NewReader(body)
 	output, err := command.CombinedOutput()
+	if ctx.Err() != nil {
+		t.Fatalf("joey ingest timed out: %v\n%s", ctx.Err(), output)
+	}
 	if err != nil {
 		t.Fatalf("joey ingest: %v\n%s", err, output)
 	}

@@ -2,7 +2,6 @@ package joeydb
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -43,12 +42,12 @@ func (s *Session) Ingest(ctx context.Context, batch ingest.Batch, options ...Req
 // IngestJSON strictly parses, validates, and compiles one v1 batch before
 // mutation.
 func (s *Session) IngestJSON(ctx context.Context, data []byte, options ...RequestOption) (*IngestionReceipt, error) {
+	if !s.requirements.Ingestion {
+		return nil, &CapabilityError{Reason: "session was not preflighted for ingestion"}
+	}
 	batch, compiled, err := ingest.ParseAndCompile(data)
 	if err != nil {
 		return nil, fmt.Errorf("joeydb: invalid ingestion batch: %w", err)
-	}
-	if !s.requirements.Ingestion {
-		return nil, &CapabilityError{Reason: "session was not preflighted for ingestion"}
 	}
 	return s.submitIngestion(ctx, batch.Profile, compiled, options...)
 }
@@ -71,7 +70,7 @@ func (s *Session) submitIngestion(ctx context.Context, profile string, compiled 
 		Watermark   uint64 `json:"watermark"`
 		LogIdentity string `json:"log_identity"`
 	}
-	response, err := s.WriteExact(ctx, body, key, &writeResponse, options...)
+	response, err := s.writeExact(ctx, body, key, &writeResponse, false, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -84,9 +83,6 @@ func (s *Session) submitIngestion(ctx context.Context, profile string, compiled 
 		AdvertisedDurability: s.capabilities.Node.Durability,
 		AdvertisedSyncLevel:  s.capabilities.Node.SyncLevel,
 		IdempotencyKey:       key, RequestID: response.RequestID,
-	}
-	if _, err := json.Marshal(receipt); err != nil {
-		return nil, &ProtocolError{RequestID: response.RequestID, Detail: "construct ingestion receipt", Cause: err}
 	}
 	return receipt, nil
 }

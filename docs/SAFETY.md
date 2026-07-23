@@ -18,7 +18,9 @@ An ingestion session additionally requires:
 - the `facts`/`record`/`ensure`/`create` vocabulary needed by the compiler.
 
 The required idempotency prefix and limits are part of the immutable session
-snapshot. Server enforcement remains authoritative.
+snapshot. The advertised retained-response maximum must fit the client’s
+configured response budget before a writable session is created. Server
+enforcement remains authoritative.
 
 ## Exact-body rule
 
@@ -47,6 +49,12 @@ attempt
             └─ resend exact body + key
 ```
 
+Once any attempt may have committed, uncertainty is monotonic: a later managed
+error does not prove that the earlier attempt failed. Only a validated
+successful keyed response resolves that state. If attempts end first, the
+client returns `UncertainOperationError` with both the originating uncertain
+attempt and any later final failure.
+
 Automatic retries are disabled unless `RetryPolicy.MaxAttempts > 1`.
 `ConservativeRetryPolicy` permits at most three attempts with bounded
 50/100 ms backoff. Applications may inject backoff and context-aware sleep
@@ -63,11 +71,13 @@ A transport failure can happen after the server committed but before the
 client received the response. If no safe retry resolves that uncertainty,
 `UncertainOperationError` retains:
 
-- the original attempt request ID;
+- the final request ID and the request ID that first became uncertain;
 - the pinned identity;
 - any newly observed identity;
-- the transport/protocol cause;
+- the originating transport/protocol cause and any later failed attempt;
 - an identity-check cause when introspection was unavailable.
+- a distinct retry-stop cause for cancellation, deadline expiry, or invalid
+  backoff.
 
 Do not switch databases or derive a new key to “get past” this error. Reconcile
 the original key against the original log epoch.
@@ -91,3 +101,7 @@ detail, a bounded raw-body prefix, and truncation/malformed markers.
 `RetryStoppedError` retains both the last JoeyDB response and the local
 cancellation/backoff cause.
 `RequestIDFromError` extracts the final known correlation ID.
+
+Injected request-ID generators, retry backoff functions, retry sleep functions,
+HTTP clients, and transports must be safe for concurrent use when their client
+or session is shared between goroutines.

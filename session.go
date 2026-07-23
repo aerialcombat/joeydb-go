@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -45,7 +46,7 @@ func (c *Client) Require(ctx context.Context, requirements Requirements, options
 		return nil, &CapabilityError{Reason: "introspection returned an invalid log identity"}
 	}
 	return &Session{
-		client: c, capabilities: capabilities,
+		client: c, capabilities: cloneCapabilities(capabilities),
 		logIdentity:  introspection.Store.LogIdentity,
 		requirements: requirements, retry: retry,
 	}, nil
@@ -86,7 +87,7 @@ func (c *Client) validateCapabilities(capabilities Capabilities, requirements Re
 		return refuse("node sync level is unsupported")
 	}
 	if capabilities.Limits.MaxJSONRequestBytes <= 0 ||
-		capabilities.Limits.MaxJSONRequestBytes > defaultMaxRequestBytes {
+		capabilities.Limits.MaxJSONRequestBytes > absoluteBodyLimit {
 		return refuse("node does not advertise a supported bounded JSON request limit")
 	}
 
@@ -111,7 +112,7 @@ func (c *Client) validateCapabilities(capabilities Capabilities, requirements Re
 	}
 	if idempotency.MaxKeyBytes <= 0 || idempotency.MaxKeyBytes > 128 ||
 		idempotency.ResponseMaxBytes <= 0 ||
-		idempotency.ResponseMaxBytes > defaultMaxResponseBytes {
+		idempotency.ResponseMaxBytes > c.maxResponseBytes {
 		return refuse("idempotency key/response limits are unbounded or unsupported")
 	}
 	if prefix := idempotency.RequiredKeyPrefix; prefix != "" {
@@ -137,13 +138,42 @@ func (c *Client) validateCapabilities(capabilities Capabilities, requirements Re
 func (s *Session) LogIdentity() string { return s.logIdentity }
 
 // Capabilities returns the session's immutable preflight snapshot by value.
-func (s *Session) Capabilities() Capabilities { return s.capabilities }
+func (s *Session) Capabilities() Capabilities { return cloneCapabilities(s.capabilities) }
+
+func cloneCapabilities(capabilities Capabilities) Capabilities {
+	clone := capabilities
+	clone.Endpoints = slices.Clone(capabilities.Endpoints)
+	clone.Query.Find = slices.Clone(capabilities.Query.Find)
+	clone.Query.WhereForms = slices.Clone(capabilities.Query.WhereForms)
+	clone.Query.WhereFields = slices.Clone(capabilities.Query.WhereFields)
+	clone.Query.Clauses = slices.Clone(capabilities.Query.Clauses)
+	clone.Query.NumericBounds = slices.Clone(capabilities.Query.NumericBounds)
+	clone.Query.OrderKeys = slices.Clone(capabilities.Query.OrderKeys)
+	clone.Query.ReturnShapes = slices.Clone(capabilities.Query.ReturnShapes)
+	clone.Query.Consistency = slices.Clone(capabilities.Query.Consistency)
+	clone.Query.OptimizeModes = slices.Clone(capabilities.Query.OptimizeModes)
+	clone.Query.Representations = slices.Clone(capabilities.Query.Representations)
+	clone.Write.Write = slices.Clone(capabilities.Write.Write)
+	clone.Write.Operations = slices.Clone(capabilities.Write.Operations)
+	clone.Write.ObjectKinds = slices.Clone(capabilities.Write.ObjectKinds)
+	clone.Write.ExpirationForms = slices.Clone(capabilities.Write.ExpirationForms)
+	clone.Write.VocabularyModes = slices.Clone(capabilities.Write.VocabularyModes)
+	clone.Write.RecordModes = slices.Clone(capabilities.Write.RecordModes)
+	clone.Write.RetractSelectors = slices.Clone(capabilities.Write.RetractSelectors)
+	clone.Errors.BodyFields = slices.Clone(capabilities.Errors.BodyFields)
+	clone.Errors.Codes = slices.Clone(capabilities.Errors.Codes)
+	return clone
+}
 
 // WriteExact performs a keyed exact-byte write. Automatic retries, when
 // enabled, never remarshal body and never cross an unavailable or changed log
 // identity.
 func (s *Session) WriteExact(ctx context.Context, body []byte, key string, out any, options ...RequestOption) (*Response, error) {
-	if !(s.requirements.Writable || s.requirements.Ingestion) {
+	return s.writeExact(ctx, body, key, out, true, options...)
+}
+
+func (s *Session) writeExact(ctx context.Context, body []byte, key string, out any, copyBody bool, options ...RequestOption) (*Response, error) {
+	if !s.requirements.Writable && !s.requirements.Ingestion {
 		return nil, &CapabilityError{Reason: "session was not preflighted for writes"}
 	}
 	idempotency := s.capabilities.Write.Idempotency
@@ -153,14 +183,20 @@ func (s *Session) WriteExact(ctx context.Context, body []byte, key string, out a
 	if int64(len(body)) > s.capabilities.Limits.MaxJSONRequestBytes {
 		return nil, &RequestTooLargeError{Size: len(body), Limit: s.capabilities.Limits.MaxJSONRequestBytes}
 	}
-	exactBody := append([]byte(nil), body...)
+	exactBody := body
+	if copyBody {
+		exactBody = append([]byte(nil), body...)
+	}
 	var lastResponse *Response
 	var lastErr error
-	var unresolved bool
+	var uncertainty writeUncertainty
 	for attempt := 1; attempt <= s.retry.MaxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			if unresolved {
-				return lastResponse, s.uncertain(lastErr, nil, "", RequestIDFromError(lastErr))
+			if uncertainty.active {
+				return lastResponse, s.uncertain(
+					uncertainty, lastErr, attempt-1, nil, err, "",
+					RequestIDFromError(lastErr),
+				)
 			}
 			if lastErr != nil {
 				return lastResponse, &RetryStoppedError{
@@ -178,42 +214,62 @@ func (s *Session) WriteExact(ctx context.Context, body []byte, key string, out a
 					Detail: fmt.Sprintf("successful keyed write response is %d bytes; advertised limit is %d",
 						len(response.Body), idempotency.ResponseMaxBytes),
 				}
-				return response, s.uncertain(protocolErr, nil, "", response.RequestID)
+				return response, s.uncertain(
+					uncertainty, protocolErr, attempt, nil, nil, "", response.RequestID,
+				)
 			}
 			if protocolErr := s.validateWriteSuccess(response); protocolErr != nil {
-				return response, s.uncertain(protocolErr, nil, "", response.RequestID)
+				return response, s.uncertain(
+					uncertainty, protocolErr, attempt, nil, nil, "", response.RequestID,
+				)
 			}
 			if err := decodeResponse(response, out); err != nil {
-				return response, s.uncertain(err, nil, "", response.RequestID)
+				return response, s.uncertain(
+					uncertainty, err, attempt, nil, nil, "", response.RequestID,
+				)
 			}
 			return response, nil
 		}
-		var transport *TransportError
-		unresolved = errors.As(err, &transport) ||
-			(response != nil && response.Status >= 200 && response.Status < 300)
+		uncertainty.note(attempt, response, err)
 		if attempt == s.retry.MaxAttempts || !retryCandidate(err) {
-			if unresolved {
-				return response, s.uncertain(err, nil, "", RequestIDFromError(err))
+			if uncertainty.active {
+				return response, s.uncertain(
+					uncertainty, err, attempt, nil, nil, "", RequestIDFromError(err),
+				)
 			}
 			return response, err
 		}
 		observed, identityErr := s.currentIdentity(ctx)
 		if identityErr != nil {
-			return response, s.uncertain(err, identityErr, "", RequestIDFromError(err))
+			return response, s.uncertain(
+				uncertainty, err, attempt, identityErr, nil, "", RequestIDFromError(err),
+			)
 		}
 		if observed != s.logIdentity {
-			return response, s.uncertain(err, nil, observed, RequestIDFromError(err))
+			return response, s.uncertain(
+				uncertainty, err, attempt, nil, nil, observed, RequestIDFromError(err),
+			)
 		}
 		delay := s.retry.Backoff(attempt - 1)
 		if delay < 0 {
+			stopErr := errors.New("joeydb: retry backoff must not be negative")
+			if uncertainty.active {
+				return response, s.uncertain(
+					uncertainty, err, attempt, nil, stopErr, observed,
+					RequestIDFromError(err),
+				)
+			}
 			return response, &RetryStoppedError{
 				RequestID: RequestIDFromError(err), Last: err,
-				Cause: errors.New("joeydb: retry backoff must not be negative"),
+				Cause: stopErr,
 			}
 		}
 		if sleepErr := s.retry.Sleep(ctx, delay); sleepErr != nil {
-			if unresolved {
-				return response, s.uncertain(err, sleepErr, observed, RequestIDFromError(err))
+			if uncertainty.active {
+				return response, s.uncertain(
+					uncertainty, err, attempt, nil, sleepErr, observed,
+					RequestIDFromError(err),
+				)
 			}
 			return response, &RetryStoppedError{
 				RequestID: RequestIDFromError(err), Last: err, Cause: sleepErr,
@@ -221,6 +277,29 @@ func (s *Session) WriteExact(ctx context.Context, body []byte, key string, out a
 		}
 	}
 	return lastResponse, lastErr
+}
+
+type writeUncertainty struct {
+	active    bool
+	attempt   int
+	requestID string
+	cause     error
+}
+
+func (u *writeUncertainty) note(attempt int, response *Response, err error) {
+	if u.active || !possiblySubmitted(response, err) {
+		return
+	}
+	u.active = true
+	u.attempt = attempt
+	u.requestID = RequestIDFromError(err)
+	u.cause = err
+}
+
+func possiblySubmitted(response *Response, err error) bool {
+	var transport *TransportError
+	return errors.As(err, &transport) ||
+		(response != nil && response.Status >= 200 && response.Status < 300)
 }
 
 func (s *Session) validateWriteSuccess(response *Response) error {
@@ -278,10 +357,30 @@ func (s *Session) currentIdentity(ctx context.Context) (string, error) {
 	return introspection.Store.LogIdentity, nil
 }
 
-func (s *Session) uncertain(cause, identityCause error, observed, requestID string) error {
+func (s *Session) uncertain(
+	state writeUncertainty,
+	last error,
+	lastAttempt int,
+	identityCause error,
+	stopCause error,
+	observed string,
+	requestID string,
+) error {
+	if !state.active {
+		state = writeUncertainty{
+			active: true, attempt: lastAttempt,
+			requestID: requestID, cause: last,
+		}
+	}
+	var final error
+	if state.attempt != lastAttempt {
+		final = last
+	}
 	return &UncertainOperationError{
-		RequestID: requestID, ExpectedIdentity: s.logIdentity,
-		ObservedIdentity: observed, Cause: cause, IdentityCause: identityCause,
+		RequestID: requestID, UncertainRequestID: state.requestID,
+		ExpectedIdentity: s.logIdentity, ObservedIdentity: observed,
+		Cause: state.cause, Last: final,
+		IdentityCause: identityCause, StopCause: stopCause,
 	}
 }
 

@@ -30,7 +30,8 @@ func (e *APIError) Error() string {
 		e.Status, e.Code, e.Retryable, e.RequestID, e.Detail)
 }
 
-func (e *APIError) Unwrap() error { return e.DecodeError }
+func (e *APIError) Unwrap() error          { return e.DecodeError }
+func (e *APIError) requestIDValue() string { return e.RequestID }
 
 // TransportError preserves the request ID assigned to a failed attempt.
 type TransportError struct {
@@ -45,8 +46,11 @@ func (e *TransportError) Error() string {
 		e.Method, e.Path, e.RequestID, e.Cause)
 }
 
-func (e *TransportError) Unwrap() error { return e.Cause }
+func (e *TransportError) Unwrap() error          { return e.Cause }
+func (e *TransportError) requestIDValue() string { return e.RequestID }
 
+// ResponseTooLargeError reports a successful response whose body exceeded the
+// configured local limit.
 type ResponseTooLargeError struct {
 	Status    int
 	RequestID string
@@ -58,6 +62,10 @@ func (e *ResponseTooLargeError) Error() string {
 		e.Limit, e.Status, e.RequestID)
 }
 
+func (e *ResponseTooLargeError) requestIDValue() string { return e.RequestID }
+
+// RequestTooLargeError reports a request refused before network I/O because
+// its body exceeded a local or advertised limit.
 type RequestTooLargeError struct {
 	Size  int
 	Limit int64
@@ -67,6 +75,8 @@ func (e *RequestTooLargeError) Error() string {
 	return fmt.Sprintf("joeydb: request is %d bytes; local limit is %d", e.Size, e.Limit)
 }
 
+// DecodeError retains a bounded successful response that could not be decoded
+// into the caller's destination.
 type DecodeError struct {
 	Status    int
 	RequestID string
@@ -79,7 +89,8 @@ func (e *DecodeError) Error() string {
 		e.Status, e.RequestID, e.Cause)
 }
 
-func (e *DecodeError) Unwrap() error { return e.Cause }
+func (e *DecodeError) Unwrap() error          { return e.Cause }
+func (e *DecodeError) requestIDValue() string { return e.RequestID }
 
 // CapabilityError is returned before mutation when a node cannot satisfy the
 // requested safety contract.
@@ -89,6 +100,8 @@ type CapabilityError struct {
 
 func (e *CapabilityError) Error() string { return "joeydb: capability refused: " + e.Reason }
 
+// InvalidKeyError reports an idempotency key that violates local syntax or the
+// server's advertised prefix or length contract.
 type InvalidKeyError struct {
 	Key    string
 	Reason string
@@ -110,7 +123,8 @@ func (e *ProtocolError) Error() string {
 	return fmt.Sprintf("joeydb: protocol error request_id=%s: %s", e.RequestID, e.Detail)
 }
 
-func (e *ProtocolError) Unwrap() error { return e.Cause }
+func (e *ProtocolError) Unwrap() error          { return e.Cause }
+func (e *ProtocolError) requestIDValue() string { return e.RequestID }
 
 // RetryStoppedError preserves both the last JoeyDB attempt and the local
 // reason (usually context cancellation) that stopped a safe retry.
@@ -136,27 +150,51 @@ func (e *RetryStoppedError) Unwrap() []error {
 	return causes
 }
 
+func (e *RetryStoppedError) requestIDValue() string { return e.RequestID }
+
 // UncertainOperationError means the client cannot prove whether a keyed write
 // committed and intentionally refused an unsafe continuation.
 type UncertainOperationError struct {
-	RequestID        string
-	ExpectedIdentity string
-	ObservedIdentity string
-	Cause            error
-	IdentityCause    error
+	// RequestID identifies the final attempted request when one is known.
+	RequestID string
+	// UncertainRequestID identifies the first attempt whose outcome could not
+	// be resolved.
+	UncertainRequestID string
+	ExpectedIdentity   string
+	ObservedIdentity   string
+	// Cause is the failure that first made the write outcome uncertain.
+	Cause error
+	// Last is a later failed attempt, when different from Cause.
+	Last error
+	// IdentityCause is set only when the required identity check failed.
+	IdentityCause error
+	// StopCause records cancellation, deadline expiry, or invalid backoff that
+	// prevented another otherwise-safe retry.
+	StopCause error
 }
 
 func (e *UncertainOperationError) Error() string {
+	uncertainRequestID := e.UncertainRequestID
+	if uncertainRequestID == "" {
+		uncertainRequestID = e.RequestID
+	}
+	attempts := fmt.Sprintf("uncertain_request_id=%s: %v", uncertainRequestID, e.Cause)
+	if e.Last != nil {
+		attempts += fmt.Sprintf("; final_request_id=%s: %v", e.RequestID, e.Last)
+	}
 	switch {
 	case e.IdentityCause != nil:
-		return fmt.Sprintf("joeydb: keyed write outcome uncertain; retry refused because log identity is unavailable (expected %s, request_id=%s): %v (last attempt: %v)",
-			e.ExpectedIdentity, e.RequestID, e.IdentityCause, e.Cause)
+		return fmt.Sprintf("joeydb: keyed write outcome uncertain; retry refused because log identity is unavailable (expected %s, request_id=%s): %v (%s)",
+			e.ExpectedIdentity, e.RequestID, e.IdentityCause, attempts)
 	case e.ObservedIdentity != "" && e.ObservedIdentity != e.ExpectedIdentity:
-		return fmt.Sprintf("joeydb: keyed write outcome uncertain; retry refused across log identity change %s -> %s (request_id=%s; last attempt: %v)",
-			e.ExpectedIdentity, e.ObservedIdentity, e.RequestID, e.Cause)
+		return fmt.Sprintf("joeydb: keyed write outcome uncertain; retry refused across log identity change %s -> %s (request_id=%s; %s)",
+			e.ExpectedIdentity, e.ObservedIdentity, e.RequestID, attempts)
+	case e.StopCause != nil:
+		return fmt.Sprintf("joeydb: keyed write outcome uncertain; retry stopped on log %s (request_id=%s): %v (%s)",
+			e.ExpectedIdentity, e.RequestID, e.StopCause, attempts)
 	default:
-		return fmt.Sprintf("joeydb: keyed write outcome uncertain on log %s (request_id=%s): %v",
-			e.ExpectedIdentity, e.RequestID, e.Cause)
+		return fmt.Sprintf("joeydb: keyed write outcome uncertain on log %s (request_id=%s; %s)",
+			e.ExpectedIdentity, e.RequestID, attempts)
 	}
 }
 
@@ -165,11 +203,19 @@ func (e *UncertainOperationError) Unwrap() []error {
 	if e.Cause != nil {
 		causes = append(causes, e.Cause)
 	}
+	if e.Last != nil {
+		causes = append(causes, e.Last)
+	}
 	if e.IdentityCause != nil {
 		causes = append(causes, e.IdentityCause)
 	}
+	if e.StopCause != nil {
+		causes = append(causes, e.StopCause)
+	}
 	return causes
 }
+
+func (e *UncertainOperationError) requestIDValue() string { return e.RequestID }
 
 // IsRetryable reports JoeyDB's managed retry decision. A malformed HTTP 429 is
 // also recognized as overload by the session retry engine, but this helper
@@ -181,25 +227,12 @@ func IsRetryable(err error) bool {
 
 // RequestIDFromError returns the correlation ID retained by known error types.
 func RequestIDFromError(err error) string {
-	var api *APIError
-	if errors.As(err, &api) {
-		return api.RequestID
+	var carrier interface {
+		error
+		requestIDValue() string
 	}
-	var transport *TransportError
-	if errors.As(err, &transport) {
-		return transport.RequestID
-	}
-	var uncertain *UncertainOperationError
-	if errors.As(err, &uncertain) {
-		return uncertain.RequestID
-	}
-	var protocol *ProtocolError
-	if errors.As(err, &protocol) {
-		return protocol.RequestID
-	}
-	var stopped *RetryStoppedError
-	if errors.As(err, &stopped) {
-		return stopped.RequestID
+	if errors.As(err, &carrier) {
+		return carrier.requestIDValue()
 	}
 	return ""
 }

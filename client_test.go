@@ -130,6 +130,54 @@ func TestRequestHeadersIDsAndTypedQueryDecode(t *testing.T) {
 	}
 }
 
+func TestQueryJSONAndSingleAttemptKeyedWrite(t *testing.T) {
+	var requests atomic.Int32
+	client := newTestClient(t, Config{
+		BaseURL: "http://example.test",
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			switch requests.Add(1) {
+			case 1:
+				if request.URL.Path != "/query" || string(body) != `{"find":"facts"}` {
+					t.Fatalf("query path=%s body=%s", request.URL.Path, body)
+				}
+				return jsonResponse(request, 200, `{"shape":"table"}`, nil), nil
+			case 2:
+				if request.URL.Path != "/write" ||
+					string(body) != `{"write":"facts"}` ||
+					request.Header.Get(IdempotencyKeyHeader) != "caller:key" {
+					t.Fatalf("write path=%s body=%s headers=%v", request.URL.Path, body, request.Header)
+				}
+				return jsonResponse(request, 200, `{"committed":true}`, nil), nil
+			default:
+				t.Fatal("unexpected extra request")
+				return nil, nil
+			}
+		}),
+	})
+	var query struct {
+		Shape string `json:"shape"`
+	}
+	if _, err := client.QueryJSON(
+		context.Background(), struct {
+			Find string `json:"find"`
+		}{Find: "facts"}, &query,
+	); err != nil || query.Shape != "table" {
+		t.Fatalf("query=%+v err=%v", query, err)
+	}
+	var write struct {
+		Committed bool `json:"committed"`
+	}
+	if _, err := client.KeyedWrite(
+		context.Background(), []byte(`{"write":"facts"}`), "caller:key", &write,
+	); err != nil || !write.Committed || requests.Load() != 2 {
+		t.Fatalf("write=%+v requests=%d err=%v", write, requests.Load(), err)
+	}
+}
+
 func TestBoundedRequestsResponsesAndErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
@@ -207,6 +255,23 @@ func TestManagedAndMalformedErrorDecoding(t *testing.T) {
 	}
 }
 
+func TestErrorHelpers(t *testing.T) {
+	api := &APIError{Retryable: true, RequestID: "api-id"}
+	if !IsRetryable(api) || RequestIDFromError(api) != "api-id" {
+		t.Fatalf("api helpers failed: %v", api)
+	}
+	transport := &TransportError{RequestID: "transport-id", Cause: io.EOF}
+	uncertain := &UncertainOperationError{
+		RequestID: "final-id", UncertainRequestID: "transport-id",
+		ExpectedIdentity: testIdentity, Cause: transport,
+	}
+	if IsRetryable(transport) ||
+		RequestIDFromError(uncertain) != "final-id" ||
+		!errors.Is(uncertain, io.EOF) {
+		t.Fatalf("transport/uncertain helpers failed: %v", uncertain)
+	}
+}
+
 func TestUnkeyedWriteNeverRetries(t *testing.T) {
 	var calls atomic.Int32
 	client := newTestClient(t, Config{
@@ -239,6 +304,32 @@ func TestContextCancellationDuringRequest(t *testing.T) {
 	}
 }
 
+func TestResponseReadFailurePreservesBoundedMetadata(t *testing.T) {
+	client := newTestClient(t, Config{
+		BaseURL: "http://example.test",
+		Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+			header := make(http.Header)
+			header.Set(RequestIDHeader, "response-id")
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     header,
+				Body:       &readErrorBody{data: []byte("partial")},
+				Request:    request,
+			}, nil
+		}),
+	})
+	response, err := client.Query(context.Background(), []byte(`{}`), nil)
+	var transport *TransportError
+	if !errors.As(err, &transport) ||
+		response == nil ||
+		response.Status != http.StatusOK ||
+		response.RequestID != "response-id" ||
+		string(response.Body) != "partial" ||
+		transport.RequestID != "response-id" {
+		t.Fatalf("response=%+v err=%v", response, err)
+	}
+}
+
 func newTestClient(t *testing.T, config Config) *Client {
 	t.Helper()
 	client, err := NewClient(config)
@@ -253,6 +344,21 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
 }
+
+type readErrorBody struct {
+	data []byte
+	read bool
+}
+
+func (b *readErrorBody) Read(target []byte) (int, error) {
+	if b.read {
+		return 0, io.EOF
+	}
+	b.read = true
+	return copy(target, b.data), io.ErrUnexpectedEOF
+}
+
+func (*readErrorBody) Close() error { return nil }
 
 func jsonResponse(request *http.Request, status int, body string, headers map[string]string) *http.Response {
 	header := make(http.Header)

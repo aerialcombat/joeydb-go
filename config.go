@@ -20,7 +20,8 @@ const (
 	defaultUserAgent         = "joeydb-go/v0"
 )
 
-// RequestIDGenerator returns one JoeyDB-safe correlation identifier.
+// RequestIDGenerator returns one JoeyDB-safe correlation identifier. A
+// generator supplied to a Client must be safe for concurrent use.
 type RequestIDGenerator func() (string, error)
 
 // Config controls local client behavior. NewClient performs no network I/O.

@@ -140,37 +140,37 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte, key s
 			Method: method, Path: path, RequestID: requestID, Cause: err,
 		}
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 
 	headerRequestID := httpResponse.Header.Get(RequestIDHeader)
 	if headerRequestID == "" {
 		headerRequestID = requestID
+	}
+	response := &Response{
+		Status:    httpResponse.StatusCode,
+		Header:    httpResponse.Header.Clone(),
+		RequestID: headerRequestID,
+	}
+	if replay := httpResponse.Header.Get(IdempotencyReplayHeader); replay != "" {
+		if parsed, parseErr := strconv.ParseBool(replay); parseErr == nil {
+			response.Replayed = parsed
+			response.ReplayHeaderPresent = true
+		}
 	}
 	limit := c.maxResponseBytes
 	if httpResponse.StatusCode < 200 || httpResponse.StatusCode >= 300 {
 		limit = c.maxErrorBodyBytes
 	}
 	raw, readErr := io.ReadAll(io.LimitReader(httpResponse.Body, limit+1))
-	if readErr != nil {
-		return nil, &TransportError{
-			Method: method, Path: path, RequestID: headerRequestID,
-			Cause: fmt.Errorf("read response: %w", readErr),
-		}
-	}
 	tooLarge := int64(len(raw)) > limit
 	if tooLarge {
 		raw = raw[:limit]
 	}
-	response := &Response{
-		Status:    httpResponse.StatusCode,
-		Header:    httpResponse.Header.Clone(),
-		RequestID: headerRequestID,
-		Body:      append([]byte(nil), raw...),
-	}
-	if replay := httpResponse.Header.Get(IdempotencyReplayHeader); replay != "" {
-		if parsed, parseErr := strconv.ParseBool(replay); parseErr == nil {
-			response.Replayed = parsed
-			response.ReplayHeaderPresent = true
+	response.Body = append([]byte(nil), raw...)
+	if readErr != nil {
+		return response, &TransportError{
+			Method: method, Path: path, RequestID: headerRequestID,
+			Cause: fmt.Errorf("read response: %w", readErr),
 		}
 	}
 
