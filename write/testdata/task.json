@@ -1,0 +1,1 @@
+{"write":"facts","record":[{"subject":"task:1","predicate":"obs:task_project","object":"project:1","mode":"ensure"},{"subject":"task:1","predicate":"obs:title","object":"text:VGFzaw","mode":"ensure"},{"subject":"task:1","predicate":"obs:status","object":"status:open","mode":"replace"}],"vocabulary":{"on_unknown":"create"}}

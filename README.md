@@ -11,10 +11,11 @@ The initial compatibility target is JoeyDB
 
 The source repository is
 [github.com/aerialcombat/joeydb-go](https://github.com/aerialcombat/joeydb-go).
-The current public release is `v0.1.0`.
+The current public release is `v0.2.0`, including typed query/write authoring
+and the ingestion compiler.
 
 ```sh
-go get github.com/aerialcombat/joeydb-go@v0.1.0
+go get github.com/aerialcombat/joeydb-go@v0.2.0
 ```
 
 The module targets Go 1.24 and uses only the standard library.
@@ -25,6 +26,171 @@ notes.
 
 The default branch may contain unreleased fixes. See
 [CHANGELOG.md](CHANGELOG.md) before selecting a version.
+
+## Typed writes
+
+The `write` package models JoeyDB's stable facts-write contract without
+caller-controlled discriminators or request maps:
+
+```go
+package main
+
+import (
+	"context"
+	"errors"
+	"log"
+	"time"
+
+	"github.com/aerialcombat/joeydb-go"
+	"github.com/aerialcombat/joeydb-go/write"
+)
+
+func heartbeat(ctx context.Context, session *joeydb.Session, sequence string) error {
+	request := write.Request{
+		Records: []write.Record{{
+			Subject:   "worker:git-ingestion",
+			Predicate: "obs:heartbeat",
+			Object:    write.Entity("service:project-observatory"),
+			Expiration: write.After(30 * time.Second),
+		}},
+		Vocabulary: write.CreateUnknown,
+	}
+
+	var receipt write.Response
+	response, err := session.WriteRequest(
+		ctx,
+		joeydb.KeySuffix("obs:heartbeat:"+sequence),
+		request,
+		&receipt,
+		joeydb.WithRequestID("observatory:heartbeat:"+sequence),
+	)
+	if err != nil {
+		var validation *write.ValidationError
+		if errors.As(err, &validation) {
+			log.Printf("invalid field=%s code=%s detail=%s",
+				validation.Path, validation.Code, validation.Detail)
+		}
+		return err
+	}
+	log.Printf("watermark=%d replayed=%t request_id=%s",
+		receipt.Watermark, response.Replayed, response.RequestID)
+	return nil
+}
+```
+
+Construction performs no I/O. `Session.WriteRequest` validates, encodes once,
+checks the request's operations/modes/object/deadline vocabulary against the
+pinned capability snapshot, applies the advertised idempotency prefix, and
+passes the exact bytes to the existing identity-safe retry engine.
+
+Objects and mutations use private union states with small constructors:
+
+```go
+request := write.Request{
+	Records: []write.Record{
+		{
+			Subject: "task:1", Predicate: "obs:task_project",
+			Object: write.Entity("project:1"), Mode: write.Ensure,
+		},
+		{
+			Subject: "task:1", Predicate: "obs:status",
+			Object: write.Entity("status:open"), Mode: write.Replace,
+		},
+		{
+			Subject: "metric:1", Predicate: "obs:value",
+			Object: write.Number(42),
+		},
+	},
+	Vocabulary: write.CreateUnknown,
+}
+```
+
+Correction, retraction, and expiration are similarly explicit:
+
+```go
+correction := write.Request{
+	Corrections: []write.Correction{
+		write.Correct("42", write.Record{
+			Subject: "task:1", Predicate: "obs:status",
+			Object: write.Entity("status:done"),
+		}),
+	},
+	Vocabulary: write.CreateUnknown,
+}
+
+maintenance := write.Request{
+	Retractions: []write.Retraction{
+		write.RetractFact("43"),
+		write.RetractExact("set:1", "obs:member", write.Entity("thing:1")),
+		write.RetractSlot("task:1", "obs:status"),
+	},
+	Expirations: []write.Expiration{
+		write.ExpireAfter("44", time.Hour),
+	},
+	Persistence: []write.Persistence{
+		write.Persist("45"),
+	},
+}
+```
+
+`write.After` requires a positive whole-millisecond duration. `write.At` and
+`write.ExpireAt` accept an exactly representable positive Unix-nanosecond
+`time.Time`. The encoder produces JoeyDB's canonical quoted decimal
+`ttl_ms`/`expires_at_ns` forms; callers do not format them.
+
+Use `joeydb.KeySuffix` normally. It applies the session's required epoch prefix
+and rejects a suffix that already contains it. `joeydb.FullKey` is the
+explicit advanced form for a complete wire key.
+
+## Typed queries
+
+The `query` package covers safe object-form facts queries and the five simple
+fact-shaped returns:
+
+```go
+import "github.com/aerialcombat/joeydb-go/query"
+
+request := query.Request{
+	Where: query.Where{
+		Predicate: query.Labels("obs:belongs_to_project"),
+		Object:    query.Labels("project:1"),
+	},
+	Return: query.Table(query.IncludeFacts),
+}
+
+var result struct {
+	Facts []struct {
+		ID, Subject, Predicate, Object string
+	} `json:"facts"`
+}
+response, err := client.QueryRequest(ctx, request, &result)
+```
+
+Strict consistency and automatic optimization are safe zero-value defaults.
+Return shape has no default, and a zero `Where` is refused; use `query.All()`
+to state an intentional match-all query. Membership filters copy and encode one
+label as a scalar and multiple labels as an array.
+
+Graph responses can avoid duplicate top-level facts:
+
+```go
+request := query.Request{
+	Where:  query.Where{Predicate: query.Labels("obs:belongs_to_project")},
+	Return: query.Graph(query.ExcludeFacts),
+	Limit:  query.MaxResults(200),
+}
+```
+
+The typed subset also supports numeric bounds, table/document/columnar order
+and offset, strict/fresh/allow-stale, forced representations, and safely paired
+watermark/log constraints. JoeyDB protocol 3 at the compatibility target has
+no hint optimization mode.
+
+Pattern joins, traversal, aggregation, bindings, OR, cursors, scalar/entity
+pages, compact payload formats, and representation administration remain
+available through the raw APIs. See
+[TYPED-AUTHORING-DESIGN.md](docs/TYPED-AUTHORING-DESIGN.md) for the exact
+coverage boundary.
 
 ## Safe ingestion
 
@@ -99,7 +265,7 @@ For untrusted JSON, use `session.IngestJSON`. It applies the strict CLI
 decoder—including duplicate-key, null, trailing-content, Unicode-surrogate,
 depth, and size checks—before any network mutation.
 
-## Query and exact writes
+## Raw query and exact-write escape hatches
 
 `Client.Query` sends caller-provided JSON bytes and decodes a bounded response:
 
@@ -117,6 +283,9 @@ _, err := client.Query(ctx, queryBytes, &result,
 automatically retried. `Client.KeyedWrite` also makes one attempt. Use
 `Session.WriteExact` when a write needs capability validation, prefix/length
 checks, bounded retry, and log-identity pinning.
+
+Raw methods are intentional protocol escape hatches. Their request bytes do
+not receive typed authoring validation.
 
 ## Safety model
 
@@ -140,6 +309,9 @@ checks, bounded retry, and log-identity pinning.
   log identity, and a valid `Idempotency-Replayed` header.
 - The final `X-Request-ID`, managed error code/detail, and underlying cause are
   retained in typed errors.
+- Typed validation runs before transport and reports a stable code, field path,
+  and detail. It does not replace authoritative server validation of current
+  database state.
 
 See [SAFETY.md](docs/SAFETY.md) for the full retry state model.
 
@@ -159,6 +331,19 @@ The API starts at v0:
 
 See [COMPATIBILITY.md](COMPATIBILITY.md) for the matrix and proof commands.
 
+## For coding agents
+
+1. Construct a client, then call `Require` before writes. Retain the returned
+   immutable session.
+2. Prefer `query.Request` and `write.Request`; reserve raw JSON for a documented
+   unsupported feature.
+3. Inspect `*query.ValidationError` or `*write.ValidationError` with
+   `errors.As`. Log `Code`, `Path`, and `Detail`.
+4. Supply `WithRequestID` when an application already has a safe correlation
+   ID; otherwise retain `Response.RequestID` or call `RequestIDFromError`.
+5. Use `KeySuffix`, never manually concatenate `RequiredKeyPrefix`. Do not
+   retry an `UncertainOperationError` on a different log or under a new key.
+
 ## Non-goals
 
 - embedding, starting, or managing the JoeyDB engine;
@@ -171,9 +356,9 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for the matrix and proof commands.
 
 ## Project Observatory migration
 
-[MIGRATION.md](docs/MIGRATION.md) shows the smallest replacement for
-Observatory’s `joey ingest` subprocess adapter. This repository does not modify
-Observatory.
+[MIGRATION.md](docs/MIGRATION.md) shows both the released v0.1 ingestion
+replacement and the planned v0.2 removal of Observatory's raw query/write
+maps. This repository does not modify Observatory.
 
 ## Verification
 

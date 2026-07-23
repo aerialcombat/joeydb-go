@@ -22,6 +22,33 @@ snapshot. The advertised retained-response maximum must fit the client’s
 configured response budget before a writable session is created. Server
 enforcement remains authoritative.
 
+For `Session.WriteRequest`, the locally encoded request also declares its
+minimal feature set. Before transport the session requires every used
+operation, object kind, expiration form, record mode, vocabulary mode, and
+retraction selector in its pinned capability snapshot.
+
+## Typed authoring boundary
+
+`query.Request.Encode` and `write.Request.Encode` validate before JSON
+encoding. Their `MarshalJSON` methods use the same validators, so
+`json.Marshal` cannot bypass the typed rules. Validation failures contain a
+stable code, field path, and detail and perform no network request.
+
+The typed layer catches structural errors and deterministic conflicts visible
+inside one request. It cannot decide state-dependent questions such as whether
+a fact ID is currently active, whether reject-mode labels exist, whether a
+logical slot has corrupt cardinality, or whether an absolute expiration is
+still later than the daemon's operation clock. JoeyDB remains authoritative
+for those checks.
+
+Typed writes encode exactly once before capability and key checks. The owned
+encoded slice goes directly to the existing `writeExact` retry state machine;
+there is no typed retry implementation and no remarshal between attempts.
+
+`KeySuffix` applies the pinned required prefix exactly once. A suffix already
+starting with that prefix is refused. `FullKey` is the explicit advanced form
+and must already satisfy the prefix and byte-limit contract.
+
 ## Exact-body rule
 
 `Session.WriteExact` copies the caller’s body once at entry. Every attempt uses

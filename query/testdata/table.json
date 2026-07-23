@@ -1,0 +1,1 @@
+{"find":"facts","where":{"predicate":"obs:status"},"return":{"shape":"table","include_facts":true},"consistency":"strict","optimize":{"mode":"auto"}}

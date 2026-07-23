@@ -76,5 +76,5 @@ fi
 	cd "$module_dir"
 	JOEYDB_REFERENCE_CLI="$temporary_dir/joey" \
 	JOEYDBD_REFERENCE_BINARY="$temporary_dir/joeydbd" \
-		go test . -run TestLiveCompatibility -count=1 -v
+		go test . -run '^TestLive' -count=1 -v
 )
